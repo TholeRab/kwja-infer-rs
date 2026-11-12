@@ -82,15 +82,39 @@ const CUDA_DLLS: [&str; 14] = [
 
 /// 把 CUDA 运行库按依赖序预载进进程。个别库加载失败只告警不中断：
 /// 缺哪个，CUDA EP 就建不起来，会回落 CPU（测试里的 CUDA 断言会拦住）。
+/// CUDA 运行库目录：沿用与 ort_dll_path 相同的上溯策略，找本仓 assets/cuda。
+/// ★ 起不再引用仓外路径（原先默认指向 Python 环境/.../torch/lib）。
+fn cuda_dll_dir() -> std::path::PathBuf {
+    const REL: &str = "assets/cuda";
+    let from_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|a| a.join(REL))
+        .find(|p| p.is_dir());
+    if let Some(p) = from_manifest {
+        return p;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let found = exe
+            .ancestors()
+            .map(|a| a.join(REL))
+            .find(|p| p.is_dir());
+        if let Some(p) = found {
+            return p;
+        }
+    }
+    panic!("找不到 CUDA 运行库目录 assets/cuda。可设 KWJA_CUDA_DLL_DIR 覆盖。");
+}
+
 fn preload_cuda_dlls() {
-    let dir = std::env::var("KWJA_CUDA_DLL_DIR").unwrap_or_else(|_| {
-        r"Python 环境\Lib\site-packages\torch\lib".to_string()
-    });
+    let dir: std::path::PathBuf = match std::env::var("KWJA_CUDA_DLL_DIR") {
+        Ok(p) => p.into(),
+        Err(_) => cuda_dll_dir(),
+    };
     for name in CUDA_DLLS {
-        let path = format!("{dir}\\{name}");
+        let path = dir.join(name);
         match unsafe { libloading::Library::new(&path) } {
             Ok(lib) => std::mem::forget(lib), // 常驻进程，供 ORT 按名解析
-            Err(e) => eprintln!("警告：预载 {path} 失败（{e}），CUDA EP 可能回落 CPU"),
+            Err(e) => eprintln!("警告：预载 {} 失败（{e}），CUDA EP 可能回落 CPU", path.display()),
         }
     }
 }

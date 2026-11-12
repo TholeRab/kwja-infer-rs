@@ -14,8 +14,9 @@
 | `assets/models/` | ONNX 模型 2 个 ＋ 1 个外部权重 | 831 MB |
 | `assets/ort/` | onnxruntime-gpu 1.23.2（含 CUDA provider） | 389 MB |
 | `assets/tokenizers/` | 两个 HF 模型的 tokenizer 文件 | 3.2 MB |
+| `assets/cuda/` | CUDA 12 + cuDNN 9 运行库 14 个 DLL | **2.0 GB** |
 
-**合计约 1.2 GB。全部不进 git**（见 `.gitignore`），
+**合计约 3.2 GB。全部不进 git**（见 `.gitignore`），
 分发时随可执行文件一起打包。
 
 ## models/
@@ -49,6 +50,39 @@
 **导入库（.lib / .def / .exp）已删**：走 load-dynamic 用不上，留着会误导后来者走静态链接。
 DLL 只导出 4 个符号（`OrtGetApiBase` ＋ 三个 `OrtSessionOptionsAppendExecutionProvider_*`），
 这是 ORT 的 C API 设计，不是残缺。
+
+## cuda/
+
+**14 个 DLL，合计约 2.0 GB**，来自 torch 2.14.1+cu126 的 `torch/lib/`。
+
+**为什么必须自带**：ORT 的 CUDA EP 在 Rust 进程里做依赖解析时**不走 PATH**。
+不预载时 EP 照样注册成功（`active_providers` 含 CUDA），
+**但节点全部静默落 CPU** —— 实测 seq=512 单次 char 前向 **~620 ms**，
+预载后 **~25 ms**，**差 25 倍且零报错**。
+
+| DLL | 体积 |
+| --- | --- |
+| `cublasLt64_12.dll` | 507.2 MB |
+| `cusparse64_12.dll` | 274.3 MB |
+| `cudnn_adv64_9.dll` | 269.4 MB |
+| `cufft64_11.dll` | 264.5 MB |
+| `cusolver64_11.dll` | 131.9 MB |
+| `cudnn_ops64_9.dll` | 120.6 MB |
+| `cublas64_12.dll` | 100.0 MB |
+| `curand64_10.dll` | 60.3 MB |
+| `cudnn_cnn64_9.dll` | 4.4 MB |
+| `cudnn_graph64_9.dll` | 2.3 MB |
+| `cudart64_12.dll` | 0.5 MB |
+| `cudnn64_9.dll` | 0.3 MB |
+| `cudnn_heuristic64_9.dll` | 小 |
+| `cudnn_engines_*64_9.dll` | 小 |
+
+**★装载顺序不能乱**：`cudnn_ops64_9.dll` 静态依赖 `cudnn_graph64_9.dll`，
+graph 必须先于 ops/cnn/adv 装入。顺序写在 `session.rs` 的 `CUDA_DLLS` 数组里。
+
+**★ 前这里指向仓外** `Python 环境/.../torch/lib`，
+现在已拷进本仓，`KWJA_CUDA_DLL_DIR` 仍可覆盖。
+验证方式：把那个目录改名藏起来后，`cargo test --workspace` 仍全过。
 
 ## tokenizers/
 
