@@ -2,25 +2,26 @@
 //!
 //! char-wwm 快照里没有 tokenizer.json，只有 vocab.txt；`AutoTokenizer.from_pretrained`
 //! 实际返回慢分词器（tokenizer_config.json：tokenizer_class=BertJapaneseTokenizer、
-//! do_word_tokenize=True、word_tokenizer_type=basic、subword_tokenizer_type=character、
-//! do_lower_case=False、mask_token=" "）。
+//! word_tokenizer_type=basic、subword_tokenizer_type=character、do_lower_case=False）。
+//! ★推理配置传 `do_word_tokenize: false`（`configs/datamodule/base/char.yaml:11`，上游
+//!   参考实现 同值）——BasicTokenizer **不参与**，控制字符/空白/标点预处理都不做。
 //! 管线（对照源码位置）：
 //! 1. added token 切分：`tokenization_python.py:625-683`（tokens_trie.split → 非 added 段进 _tokenize）；
-//! 2. BasicTokenizer：`tokenization_bert_japanese.py:660-696`
-//!    （_clean_text 去控制字符/空白归一 → NFC → 空白切分 → 标点逐字隔离；汉 字加空格已关）；
-//! 3. CharacterTokenizer：`tokenization_bert_japanese.py:597-622`（词内再 NFKC，逐字符查 vocab，缺字 [UNK]）；
+//! 2. `_tokenize`：`tokenization_bert_japanese.py:212-223`——do_word_tokenize=false 时
+//!    `tokens = [text]` 整段直通；
+//! 3. CharacterTokenizer：`tokenization_bert_japanese.py:587-611`（整段 NFKC，逐字符查 vocab，缺字 [UNK]）；
 //! 4. 组装：[CLS] + ids + [SEP]，右侧补 [PAD] 到 max_seq_length。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::EncodedInput;
 
-/// all_special_tokens（BertJapaneseTokenizer：unk/sep/pad/cls/mask；mask_token 恰为 " "）。
-const SPECIAL_TOKENS: [&str; 5] = ["[UNK]", "[SEP]", "[PAD]", "[CLS]", " "];
+/// all_special_tokens（BertJapaneseTokenizer：unk/sep/pad/cls/mask，即 MASK]；
+/// 另有配置追加的 " "，经 load 的 additional_special_tokens 进 trie）。
+const SPECIAL_TOKENS: [&str; 6] = ["[UNK]", "[SEP]", "[PAD]", "[CLS]", "MASK]", " "];
 
 pub struct CharTokenizer {
     vocab: HashMap<String, u32>,
@@ -102,9 +103,7 @@ impl CharTokenizer {
             if self.added_ids.contains_key(&segment) || self.never_split.contains(&segment) {
                 tokens.push(segment);
             } else {
-                for word in self.basic_tokenize(&segment) {
-                    tokens.extend(self.character_tokenize(&word));
-                }
+                tokens.extend(self.character_tokenize(&segment));
             }
         }
 
@@ -143,9 +142,7 @@ impl CharTokenizer {
             if self.added_ids.contains_key(&segment) || self.never_split.contains(&segment) {
                 count += 1;
             } else {
-                for word in self.basic_tokenize(&segment) {
-                    count += self.character_tokenize(&word).len();
-                }
+                count += self.character_tokenize(&segment).len();
             }
         }
         count
@@ -153,10 +150,11 @@ impl CharTokenizer {
 
     /// writer 的 special 过滤集（`char_module_writer.py:46-48`）：
     /// bos/eos 对本 tokenizer 不存在（None 不入集），实际生效的是 pad/cls/sep/mask。
+    /// mask token 取快照 special_tokens_map.json 的 MASK]（vocab id 4）。
     /// 注意 [UNK] 不在过滤集里——UNK 位保留，照样出标签。
     pub fn writer_special_ids(&self) -> Vec<u32> {
         let mut ids = vec![self.pad_id, self.cls_id, self.sep_id];
-        if let Some(mask_id) = self.vocab.get("") {
+        if let Some(mask_id) = self.vocab.get("MASK]") {
             ids.push(*mask_id);
         }
         ids
@@ -194,44 +192,10 @@ impl CharTokenizer {
         segments
     }
 
-    /// BasicTokenizer.tokenize（do_lower_case=False、tokenize_chinese_chars=False、strip_accents=None）。
-    fn basic_tokenize(&self, text: &str) -> Vec<String> {
-        let cleaned = clean_text(text);
-        let nfc: String = cleaned.nfc().collect();
-        let mut split_tokens: Vec<String> = Vec::new();
-        for token in nfc.split_whitespace() {
-            split_tokens.extend(self.split_on_punc(token));
-        }
-        let joined = split_tokens.join(" ");
-        joined.split_whitespace().map(String::from).collect()
-    }
-
-    /// _run_split_on_punc：never_split 的词整存，其余按标点逐字隔离。
-    fn split_on_punc(&self, token: &str) -> Vec<String> {
-        if self.never_split.contains(token) {
-            return vec![token.to_string()];
-        }
-        let mut out: Vec<String> = Vec::new();
-        let mut cur = String::new();
-        for c in token.chars() {
-            if is_punctuation(c) {
-                if !cur.is_empty() {
-                    out.push(std::mem::take(&mut cur));
-                }
-                out.push(c.to_string());
-            } else {
-                cur.push(c);
-            }
-        }
-        if !cur.is_empty() {
-            out.push(cur);
-        }
-        out
-    }
-
-    /// CharacterTokenizer.tokenize：词内 NFKC 后逐字符查 vocab，缺字 [UNK]。
-    fn character_tokenize(&self, word: &str) -> Vec<String> {
-        let nfkc: String = word.nfkc().collect();
+    /// CharacterTokenizer.tokenize：整段 NFKC 后逐字符查 vocab，缺字 [UNK]
+    /// （do_word_tokenize=false 下吃的是整个非 added 段，即 `_tokenize` 的 `tokens = [text]`）。
+    fn character_tokenize(&self, text: &str) -> Vec<String> {
+        let nfkc: String = text.nfkc().collect();
         nfkc.chars()
             .map(|c| {
                 let s = c.to_string();
@@ -243,64 +207,4 @@ impl CharTokenizer {
             })
             .collect()
     }
-}
-
-/// _clean_text：cp==0、U+FFFD、控制字符删除；空白归一成空格。
-fn clean_text(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        let u = c as u32;
-        if u == 0 || u == 0xFFFD || is_control(c) {
-            continue;
-        }
-        if is_whitespace(c) {
-            out.push(' ');
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// _is_whitespace：空格/制表/换行/回车 或 Unicode Zs。
-fn is_whitespace(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r')
-        || get_general_category(c) == GeneralCategory::SpaceSeparator
-}
-
-/// _is_control：\t\n\r 算空白不算控制；其余 C*（Cc/Cf/Cn/Co/Cs）算控制。
-fn is_control(c: char) -> bool {
-    if matches!(c, '\t' | '\n' | '\r') {
-        return false;
-    }
-    matches!(
-        get_general_category(c),
-        GeneralCategory::Control
-            | GeneralCategory::Format
-            | GeneralCategory::Unassigned
-            | GeneralCategory::PrivateUse
-            | GeneralCategory::Surrogate
-    )
-}
-
-/// _is_punctuation：非字母数字的 ASCII 视作标点，其余按 Unicode P*。
-fn is_punctuation(c: char) -> bool {
-    let u = c as u32;
-    if (33..=47).contains(&u)
-        || (58..=64).contains(&u)
-        || (91..=96).contains(&u)
-        || (123..=126).contains(&u)
-    {
-        return true;
-    }
-    matches!(
-        get_general_category(c),
-        GeneralCategory::ConnectorPunctuation
-            | GeneralCategory::DashPunctuation
-            | GeneralCategory::OpenPunctuation
-            | GeneralCategory::ClosePunctuation
-            | GeneralCategory::InitialPunctuation
-            | GeneralCategory::FinalPunctuation
-            | GeneralCategory::OtherPunctuation
-    )
 }
