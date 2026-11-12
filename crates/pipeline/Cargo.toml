@@ -9,6 +9,7 @@ kwja-tokenizer = { path = "../tokenizer" }
 kwja-encoder = { path = "../encoder" }
 kwja-heads = { path = "../heads" }
 ndarray.workspace = true
+regex.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

@@ -31,8 +31,51 @@ fn ort_dll_path() -> std::path::PathBuf {
     r"外部素材\_cache\ort\1.23.2\onnxruntime\capi\onnxruntime.dll".into()
 }
 
+/// CUDA/cuDNN 运行库预载清单（torch/lib 内，**按依赖序**）。
+///
+/// ★为什么必须预载（ 实测，探针 `encoder/tests/cuda_speed_probe.rs`）：
+/// Rust 进程里 ORT 的 CUDA EP 做依赖解析时**不走 PATH**——不预载时 EP 照样
+/// 注册成功（`active_providers` 含 CUDA），但节点全部静默落 CPU：
+/// seq=512 单次 char 前向 ~620ms；按下面顺序预载后 ~25ms。
+/// Python 侧等价动作是「先 import torch」把 CUDA DLL 装进进程
+/// （AGENTS.md 的 ORT 模板用 os.add_dll_directory，同一件事）。
+/// 顺序不能乱：`cudnn_ops64_9.dll` 静态依赖 `cudnn_graph64_9.dll`，
+/// graph 必须先于 ops/cnn/adv 装入。
+const CUDA_DLLS: [&str; 14] = [
+    "cudart64_12.dll",
+    "cublas64_12.dll",
+    "cublasLt64_12.dll",
+    "cudnn64_9.dll",
+    "cudnn_graph64_9.dll",
+    "cudnn_ops64_9.dll",
+    "cudnn_cnn64_9.dll",
+    "cudnn_adv64_9.dll",
+    "cudnn_heuristic64_9.dll",
+    "cudnn_engines_precompiled64_9.dll",
+    "cudnn_engines_runtime_compiled64_9.dll",
+    "cufft64_11.dll",
+    "curand64_10.dll",
+    "cusolver64_11.dll",
+];
+
+/// 把 CUDA 运行库按依赖序预载进进程。个别库加载失败只告警不中断：
+/// 缺哪个，CUDA EP 就建不起来，会回落 CPU（测试里的 CUDA 断言会拦住）。
+fn preload_cuda_dlls() {
+    let dir = std::env::var("KWJA_CUDA_DLL_DIR").unwrap_or_else(|_| {
+        r"Python 环境\Lib\site-packages\torch\lib".to_string()
+    });
+    for name in CUDA_DLLS {
+        let path = format!("{dir}\\{name}");
+        match unsafe { libloading::Library::new(&path) } {
+            Ok(lib) => std::mem::forget(lib), // 常驻进程，供 ORT 按名解析
+            Err(e) => eprintln!("警告：预载 {path} 失败（{e}），CUDA EP 可能回落 CPU"),
+        }
+    }
+}
+
 fn global_environment(device: Device) -> Result<&'static Environment, EncoderError> {
     let built = ENVIRONMENT.get_or_init(|| {
+        preload_cuda_dlls();
         let builder = ort::init_from(ort_dll_path())
             .map_err(|e| format!("加载 onnxruntime.dll 失败：{e}"))?;
         let providers = cuda_ep::execution_providers(device);

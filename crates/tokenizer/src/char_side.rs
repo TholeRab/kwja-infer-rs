@@ -132,6 +132,36 @@ impl CharTokenizer {
         })
     }
 
+    /// `len(tokenizer.tokenize(text))`：不加 special、不补 pad 的 token 数。
+    /// 切窗（`split_flat_document`）按这个数贪心装句。
+    pub fn tokenize_len(&self, text: &str) -> usize {
+        let mut count = 0usize;
+        for segment in self.split_on_added(text) {
+            if segment.is_empty() {
+                continue;
+            }
+            if self.added_ids.contains_key(&segment) || self.never_split.contains(&segment) {
+                count += 1;
+            } else {
+                for word in self.basic_tokenize(&segment) {
+                    count += self.character_tokenize(&word).len();
+                }
+            }
+        }
+        count
+    }
+
+    /// writer 的 special 过滤集（`char_module_writer.py:46-48`）：
+    /// bos/eos 对本 tokenizer 不存在（None 不入集），实际生效的是 pad/cls/sep/mask。
+    /// 注意 [UNK] 不在过滤集里——UNK 位保留，照样出标签。
+    pub fn writer_special_ids(&self) -> Vec<u32> {
+        let mut ids = vec![self.pad_id, self.cls_id, self.sep_id];
+        if let Some(mask_id) = self.vocab.get("") {
+            ids.push(*mask_id);
+        }
+        ids
+    }
+
     /// tokens_trie.split：从左到右扫，命中最长的 added token 就切出来（保序）。
     fn split_on_added(&self, text: &str) -> Vec<String> {
         let chars: Vec<char> = text.chars().collect();
