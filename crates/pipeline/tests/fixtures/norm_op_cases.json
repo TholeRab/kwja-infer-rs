@@ -1,0 +1,195 @@
+[
+ {
+  "name": "K_原样",
+  "surf": "今日",
+  "tags": [
+   "K",
+   "K"
+  ],
+  "expected": "今日"
+ },
+ {
+  "name": "K_混在",
+  "surf": "ぎんこう",
+  "tags": [
+   "V",
+   "K",
+   "K",
+   "S"
+  ],
+  "expected": "きんこう"
+ },
+ {
+  "name": "V_词首合法",
+  "surf": "が",
+  "tags": [
+   "V"
+  ],
+  "expected": "か"
+ },
+ {
+  "name": "V_词首浊音",
+  "surf": "ば",
+  "tags": [
+   "V"
+  ],
+  "expected": "は"
+ },
+ {
+  "name": "V_非词首_非法但宽松保留",
+  "surf": "あが",
+  "tags": [
+   "K",
+   "V"
+  ],
+  "expected": "あか"
+ },
+ {
+  "name": "V_非浊音_宽松保留",
+  "surf": "あ",
+  "tags": [
+   "V"
+  ],
+  "expected": "あ"
+ },
+ {
+  "name": "D_长音符",
+  "surf": "あー",
+  "tags": [
+   "K",
+   "D"
+  ],
+  "expected": "あ"
+ },
+ {
+  "name": "D_促音",
+  "surf": "あっ",
+  "tags": [
+   "K",
+   "D"
+  ],
+  "expected": "あ"
+ },
+ {
+  "name": "D_小字",
+  "surf": "あぁ",
+  "tags": [
+   "K",
+   "D"
+  ],
+  "expected": "あ"
+ },
+ {
+  "name": "D_非可删字_宽松仍删",
+  "surf": "い",
+  "tags": [
+   "D"
+  ],
+  "expected": ""
+ },
+ {
+  "name": "S_小转大",
+  "surf": "ぁ",
+  "tags": [
+   "S"
+  ],
+  "expected": "あ"
+ },
+ {
+  "name": "S_非小字_宽松保留",
+  "surf": "い",
+  "tags": [
+   "S"
+  ],
+  "expected": "い"
+ },
+ {
+  "name": "P_あ段",
+  "surf": "あー",
+  "tags": [
+   "K",
+   "P"
+  ],
+  "expected": "あー"
+ },
+ {
+  "name": "P_か段",
+  "surf": "かー",
+  "tags": [
+   "K",
+   "P"
+  ],
+  "expected": "かあ"
+ },
+ {
+  "name": "P_无前字_宽松保留",
+  "surf": "ー",
+  "tags": [
+   "P"
+  ],
+  "expected": "ー"
+ },
+ {
+  "name": "P_非长音符_宽松保留",
+  "surf": "い",
+  "tags": [
+   "P"
+  ],
+  "expected": "い"
+ },
+ {
+  "name": "P_前字不在映射_宽松保留",
+  "surf": "んー",
+  "tags": [
+   "K",
+   "P"
+  ],
+  "expected": "んー"
+ },
+ {
+  "name": "E_え段",
+  "surf": "えー",
+  "tags": [
+   "K",
+   "E"
+  ],
+  "expected": "ええ"
+ },
+ {
+  "name": "E_け段",
+  "surf": "けー",
+  "tags": [
+   "K",
+   "E"
+  ],
+  "expected": "けえ"
+ },
+ {
+  "name": "E_无前字_宽松保留",
+  "surf": "ー",
+  "tags": [
+   "E"
+  ],
+  "expected": "ー"
+ },
+ {
+  "name": "E_前字不在映射_宽松保留",
+  "surf": "いー",
+  "tags": [
+   "K",
+   "E"
+  ],
+  "expected": "いー"
+ },
+ {
+  "name": "D连删",
+  "surf": "あーーっ",
+  "tags": [
+   "K",
+   "D",
+   "D",
+   "D"
+  ],
+  "expected": "あ"
+ }
+]

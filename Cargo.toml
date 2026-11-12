@@ -1,10 +1,20 @@
 [workspace]
 resolver = "2"
-members = [
-    "crates/normalize",
-    "crates/tokenizer",
-    "crates/encoder",
-    "crates/heads",
-    "crates/pipeline",
-    "cli",
-]
+members = ["crates/*", "cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+ndarray = "0.17"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ort = { version = "2.0.0-rc.15", default-features = false, features = [
+    "std",
+    "ndarray",
+    "api-23",
+    "cuda",
+    "load-dynamic",
+] }

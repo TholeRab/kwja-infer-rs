@@ -472,6 +472,7 @@ dependencies = [
  "kwja-normalize",
  "kwja-tokenizer",
  "ndarray",
+ "serde_json",
  "thiserror",
 ]
 

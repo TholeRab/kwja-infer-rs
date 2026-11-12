@@ -1,5 +1,9 @@
 //! ORT 会话封装：一个进程一个 `Environment`（ORT 硬限制），char/word 各一个 `Session`。
 //! 链接走 `ORT_LIB_PATH` 指向的本机 onnxruntime 1.23.2（见 `.cargo/config.toml`）。
+//!
+//! ★本路线用 load-dynamic（运行时 `ort::init_from` 显式加载 DLL），**不需要导入库**；
+//! capi 目录里只有 `onnxruntime.dll` 是正常的。若有人重新生成 `.lib` 并试图走静态链接，
+//! 会撞上 System32 里 1.17 的旧 DLL（见 设计文档/18 §二#2）。
 
 use std::path::Path;
 use std::sync::OnceLock;
