@@ -19,9 +19,10 @@ use unicode_normalization::UnicodeNormalization;
 
 use crate::EncodedInput;
 
-/// all_special_tokens（BertJapaneseTokenizer：unk/sep/pad/cls/mask，即 MASK]；
+/// all_special_tokens（BertJapaneseTokenizer：unk/sep/pad/cls/mask，即 [MASK]；
 /// 另有配置追加的 " "，经 load 的 additional_special_tokens 进 trie）。
-const SPECIAL_TOKENS: [&str; 6] = ["[UNK]", "[SEP]", "[PAD]", "[CLS]", "MASK]", " "];
+/// 取自快照 special_tokens_map.json 与 vocab.txt 第 5 行，两处都是 `[MASK]`。
+const SPECIAL_TOKENS: [&str; 6] = ["[UNK]", "[SEP]", "[PAD]", "[CLS]", "[MASK]", " "];
 
 pub struct CharTokenizer {
     vocab: HashMap<String, u32>,
@@ -150,13 +151,21 @@ impl CharTokenizer {
 
     /// writer 的 special 过滤集（`char_module_writer.py:46-48`）：
     /// bos/eos 对本 tokenizer 不存在（None 不入集），实际生效的是 pad/cls/sep/mask。
-    /// mask token 取快照 special_tokens_map.json 的 MASK]（vocab id 4）。
+    /// mask token 取快照 special_tokens_map.json 的 [MASK]（vocab id 4）。
     /// 注意 [UNK] 不在过滤集里——UNK 位保留，照样出标签。
+    ///
+    /// ★原先把字面量写成了 `MASK]`（少一个左方括号），`vocab.get` 必然返回 None，
+    ///   mask 从来没进过过滤集：实际是 3 项 {0,1,2}，而 Python 是 {None,0,1,2,4}。
+    ///   输出之所以没差，是因为 id 4 在 char 编码输入里不可达（文本里不会出现
+    ///   `[MASK]` 字面量）——属于「输出相同但设计不对」，不是「对齐了」。
     pub fn writer_special_ids(&self) -> Vec<u32> {
         let mut ids = vec![self.pad_id, self.cls_id, self.sep_id];
-        if let Some(mask_id) = self.vocab.get("MASK]") {
-            ids.push(*mask_id);
-        }
+        let mask_id = self
+            .vocab
+            .get("[MASK]")
+            .copied()
+            .expect("vocab.txt 里没有 [MASK]");
+        ids.push(mask_id);
         ids
     }
 
