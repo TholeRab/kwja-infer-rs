@@ -1,1 +1,46 @@
-//! 多标签头（阶段 3 落地）：word_feature / base_phrase_feature 等，按阈值出 0/1。
+//! 多标签头：word_feature（5 类）与 base_phrase_feature（64 类）的
+//! sigmoid 概率 → 0/1 判定。
+//!
+//! 概率由 `LoRASequenceMultiLabelingHead`（`components/head.py:46-76`）的
+//! `torch.sigmoid(logits)` 输出；本模块只做**阈值解码**，矩阵乘部分与其它头一样
+//! 归推理接线。阈值语义取自两个消费点，必须逐条照抄：
+//! - `flat_chunk.chunk_plain`（flat_chunk.py:39-51）：逐类 `>= 0.5`，
+//!   外加基本句／文節切分的**和阈值规则**（`p[基本句-区切] + p[文節-区切] >= 1.0`）；
+//! - `flat_small_steps.add_bp_features_plain`（flat_small_steps.py:31-36）：逐类 `>= 0.5`，
+//!   其中 `節-区切`／`節-主辞` 两类由消费方特判，不走这里的逐类落键。
+
+use crate::mask_tables::{BASE_PHRASE_FEATURES, WORD_FEATURES};
+
+const _: () = {
+    assert!(WORD_FEATURES.len() == 5, "WORD_FEATURES 应为 5 类");
+    assert!(BASE_PHRASE_FEATURES.len() == 64, "BASE_PHRASE_FEATURES 应为 64 类");
+};
+
+/// WORD_FEATURES 里各类的下标（constants.py:1092 的顺序，flat_chunk.py:24-28 同款取法）。
+pub const WORD_FEATURE_HEAD: usize = 0; // 基本句-主辞
+pub const WORD_FEATURE_BP_END: usize = 1; // 基本句-区切
+pub const WORD_FEATURE_PH_END: usize = 2; // 文節-区切
+pub const WORD_FEATURE_YOGEN_HEAD: usize = 3; // 用言表記先頭
+pub const WORD_FEATURE_YOGEN_TAIL: usize = 4; // 用言表記末尾
+
+/// 逐类阈值判定：`p >= threshold` → true。
+///
+/// 两个头的消费点都用 `>= 0.5`（含等号），用例里专门放了恰好 0.5 的行锁死这个语义。
+#[must_use]
+pub fn multi_label_flags(probs: &[f32], threshold: f32) -> Vec<bool> {
+    probs.iter().map(|&p| p >= threshold).collect()
+}
+
+/// chunk_plain 的基本句切分条件（flat_chunk.py:46）：
+/// `p[基本句-区切] >= 0.5`，或两个切分概率之和 `>= 1.0`。
+#[must_use]
+pub fn closes_base_phrase(p_bp_end: f32, p_ph_end: f32) -> bool {
+    p_bp_end >= 0.5 || p_bp_end + p_ph_end >= 1.0
+}
+
+/// chunk_plain 的文节切分条件（flat_chunk.py:49）：
+/// `p[文節-区切] >= 0.5` **且**两个切分概率之和 `>= 1.0`。
+#[must_use]
+pub fn closes_phrase(p_bp_end: f32, p_ph_end: f32) -> bool {
+    p_ph_end >= 0.5 && p_bp_end + p_ph_end >= 1.0
+}

@@ -4,6 +4,9 @@
 //! （get_morpheme_attribute_predictions／CRF.viterbi_decode／torch.topk／softmax）
 //! 现场算出；随机数固定种子。
 
+use kwja_heads::lora_multi_labeling::{
+    closes_base_phrase, closes_phrase, multi_label_flags, WORD_FEATURE_BP_END, WORD_FEATURE_PH_END,
+};
 use kwja_heads::lora_relation_wise::{discourse_decode, topk_dim2};
 use kwja_heads::sequence_labeling::{
     argmax, get_morpheme_attribute_predictions, viterbi_decode, CrfParameters,
@@ -157,5 +160,42 @@ fn reading_argmax_matches_python() {
             .map(|rows| rows.iter().map(|row| argmax(row)).collect())
             .collect();
         assert_eq!(got, usize_rows(&case["expected"]), "reading argmax 不一致");
+    }
+}
+
+#[test]
+fn multi_label_thresholds_match_python() {
+    for case in load("multi_label_cases.json") {
+        let name = case["name"].as_str().unwrap();
+        let threshold = case["threshold"].as_f64().unwrap() as f32;
+        let probs = f32_rows(&case["probs"]);
+        let expected_flags = case["expected_flags"].as_array().unwrap();
+        for (row, expected) in probs.iter().zip(expected_flags.iter()) {
+            let flags: Vec<bool> = expected
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_bool().unwrap())
+                .collect();
+            assert_eq!(multi_label_flags(row, threshold), flags, "{name}: flags 不一致");
+        }
+        if let Some(expected_bp) = case.get("expected_bp_close") {
+            for (row, expected) in probs.iter().zip(expected_bp.as_array().unwrap().iter()) {
+                assert_eq!(
+                    closes_base_phrase(row[WORD_FEATURE_BP_END], row[WORD_FEATURE_PH_END]),
+                    expected.as_bool().unwrap(),
+                    "{name}: 基本句切分条件不一致"
+                );
+            }
+        }
+        if let Some(expected_ph) = case.get("expected_ph_close") {
+            for (row, expected) in probs.iter().zip(expected_ph.as_array().unwrap().iter()) {
+                assert_eq!(
+                    closes_phrase(row[WORD_FEATURE_BP_END], row[WORD_FEATURE_PH_END]),
+                    expected.as_bool().unwrap(),
+                    "{name}: 文节切分条件不一致"
+                );
+            }
+        }
     }
 }
