@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 unicode-normalization = "0.1"
+
+[dev-dependencies]
+serde_json = "1"

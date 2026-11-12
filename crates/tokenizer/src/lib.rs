@@ -2,3 +2,10 @@
 
 pub mod char_side;
 pub mod word_side;
+
+/// 一次编码的产物（input_ids / attention_mask 均为 ONNX 需要的 i64）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EncodedInput {
+    pub input_ids: Vec<i64>,
+    pub attention_mask: Vec<i64>,
+}
