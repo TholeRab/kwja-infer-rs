@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+libm = "0.2"
 ndarray.workspace = true
-
-[dev-dependencies]
 serde_json = "1"
