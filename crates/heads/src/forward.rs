@@ -202,8 +202,12 @@ impl LoraDelta {
                     }
                     let b_base = r * self.hid * self.labels;
                     let o_base = s * self.hid * self.labels;
-                    for i in 0..self.hid * self.labels {
-                        out[o_base + i] += t * self.b[b_base + i];
+                    // ★只累加同一个标签通道 l 的那一列：B 的形状是 (rank, hid, labels)，
+                    //   下标＝r·hid·labels ＋ i·labels ＋ l。写成一整段 hid*labels 的连续累加
+                    //   会把 tmp[s,r,l] 摊到**全部**标签上，两个标签张量交叉污染。
+                    for i in 0..self.hid {
+                        let k = i * self.labels + l;
+                        out[o_base + k] += t * self.b[b_base + k];
                     }
                 }
             }

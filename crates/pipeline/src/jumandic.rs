@@ -48,11 +48,14 @@ impl Cdb {
         Ok(Self { data, tables })
     }
 
-    /// cdb 的 djb2 变体：h = 5381 起步，`h = h*5 + byte`（mod 2^32）。
+    /// cdb 的哈希（cdb.txt）：`h = 5381` 起步，每字节 `h = ((h << 5) + h) ^ byte`。
+    /// ★末位是**异或**不是加法（pycdblib/djb_hash.py:5、cdb.txt 原文一致）。
+    /// 写成加法时所有 key 都落到错误槽位，查表静默返回空——
+    /// 实测整章 357 条 代表表記 全缺，却一条错误都不报。
     fn hash(key: &[u8]) -> u32 {
         let mut h: u32 = 5381;
         for &b in key {
-            h = h.wrapping_mul(5).wrapping_add(b as u32);
+            h = h.wrapping_mul(33) ^ u32::from(b);
         }
         h
     }
@@ -88,8 +91,9 @@ impl Cdb {
             }
             let slot_hash = u32::from_le_bytes(self.data[slot_off..slot_off + 4].try_into().unwrap());
             let key_pos = u32::from_le_bytes(self.data[slot_off + 4..slot_off + 8].try_into().unwrap());
-            if key_pos == 0 {
-                // 空槽：cdb 用 key_pos==0 表示空（首记录不可能在 0，头占了 2048）
+            // ★空槽的判据是**记录哈希为 0**，不是记录位置为 0（cdblib/cdblib.py:198
+            //   的 `if not rec_h: break`）。拿位置判空会把正常槽当成空槽提前退出。
+            if slot_hash == 0 {
                 return None;
             }
             if slot_hash == h

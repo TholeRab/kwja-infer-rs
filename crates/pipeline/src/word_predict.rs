@@ -97,7 +97,15 @@ impl WordPredictor {
         encoder: &mut dyn Encoder,
         juman_text: &str,
     ) -> Result<String, String> {
-        let document = parse_jumanpp_document(juman_text, "");
+        // ★doc_id 不能留空串：Python 侧分窗之前先跑 add_doc_ids_flat
+        //   （datasets/utils.py:24-30），把空 doc_id 补成 "<时间戳>-<序号>"；
+        //   分窗时 to_sub_doc_id 再把子文档拼成 "<前缀>-s{stride}i{idx}"。
+        //   留空串会生成 "-s21i0" 这类**匹配不上** SUB_DOC_PAT 的 id
+        //   （正则要求前缀至少一个非 '-' 字符），于是 target_sentence_flags
+        //   走「不匹配 ⇒ 全 True」分支——整窗 21 句全被当成目标句，
+        //   buffer 与 cohesion 的 targets 全错（实测第 1 章 rel 差 66 处）。
+        //   前缀取什么值不影响输出：输出前 strip_subdoc 会把它剥掉。
+        let document = parse_jumanpp_document(juman_text, "0");
         let windows = split_flat_word_document(
             &document,
             self.max_token_length,
@@ -277,7 +285,18 @@ impl WordPredictor {
         }
 
         // ---- 依存（只作用目标句；topk＋类型＋成环回退）----
-        let root_gi = n_morphemes; // [ROOT] 是第 0 个 special 词素
+        // ★[ROOT] 在 special_tokens 里的位置是**第 6 个**（[著者] [読者] [不特定:人]
+        //   [不特定:物] [NULL] [NA] [ROOT]），不是第 0 个。Python 侧取的是
+        //   special_token_indexer.get_morpheme_level_index("[ROOT]")（word_inference.py:180），
+        //   即 num_morphemes + 该下标。写成 num_morphemes 会让依存掩码把根画到
+        //   [著者] 列上，整章 parent 全错（实测第 1 章 72 处基本句行、8 处文节行）。
+        let root_offset = self
+            .tables
+            .dataset_special_tokens()
+            .iter()
+            .position(|t| *t == "[ROOT]")
+            .expect("special_tokens 里没有 [ROOT]");
+        let root_gi = n_morphemes + root_offset;
         let dep_proj = self.heads.dependency.project(&pooled);
         let mut dep: HashMap<String, (Vec<i32>, Vec<usize>)> = HashMap::new();
         for (si, tgt) in tgt_flags.iter().enumerate() {
@@ -332,7 +351,18 @@ impl WordPredictor {
             dep,
             cohesion_proj: Some(cohesion_proj),
             discourse_proj: Some(discourse_proj),
-            special_indices: (0..n_specials).map(|i| n_morphemes + i).collect(),
+            // ★cohesion 的 special 候选列不含 [ROOT]：Python 侧取
+            //   get_morpheme_level_indices(only_cohesion=True)，把 [ROOT] 滤掉了
+            //   （[ROOT] 是依存树的虚拟根，不参与指代消解）。多给一列会让 argmax
+            //   落到一个本不该存在的候选上，整章 rel 全错。
+            cohesion_special_indices: self
+                .tables
+                .dataset_special_tokens()
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| **t != "[ROOT]")
+                .map(|(i, _)| n_morphemes + i)
+                .collect(),
             sent_of_morpheme,
         }))
     }
@@ -419,7 +449,7 @@ struct WindowOut {
     dep: HashMap<String, (Vec<i32>, Vec<usize>)>,
     cohesion_proj: Option<RelationWiseProjection>,
     discourse_proj: Option<SelectionProjection>,
-    special_indices: Vec<usize>,
+    cohesion_special_indices: Vec<usize>,
     sent_of_morpheme: Vec<usize>,
 }
 
@@ -540,8 +570,8 @@ impl Buffer {
                 &|t: &str| tables.cohesion_task2name(t),
                 &|t: &str| tables.cohesion_task2rels(t),
                 &|a: usize, c: usize| sent_of_morpheme[a] == sent_of_morpheme[c],
-                &out.special_indices,
-                &tables.special_tokens,
+                &out.cohesion_special_indices,
+                &tables.dataset_special_tokens().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                 &tables.exophora_referents,
                 tables.restrict_cohesion_target,
                 tables.cohesion_rels().len(),
