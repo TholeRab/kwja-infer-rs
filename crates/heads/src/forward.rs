@@ -65,8 +65,10 @@ impl WeightFile {
             .unwrap_or_else(|| panic!("权重缺 {name}"));
         assert_eq!(shape.iter().product::<usize>(), len / 4, "{name} 长度不符");
         self.bytes[start..start + len]
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| f32::from_le_bytes(*c))
             .collect()
     }
 
@@ -274,13 +276,13 @@ impl SelectionProjection {
         let mut out = Vec::with_capacity(self.ht.len());
         for tj in &self.ht {
             let mut logits = vec![0.0f32; self.labels];
-            for l in 0..self.labels {
+            for (l, lg) in logits.iter_mut().enumerate() {
                 let w = &self.output_weight[l * self.hid..(l + 1) * self.hid];
                 let mut acc = 0.0f32;
                 for h in 0..self.hid {
                     acc += w[h] * gelu(self.hs[i][h] + tj[h]);
                 }
-                logits[l] = acc;
+                *lg = acc;
             }
             out.push(logits);
         }
@@ -289,6 +291,47 @@ impl SelectionProjection {
 
     pub fn rows(&self) -> usize {
         self.ht.len()
+    }
+
+    /// 只算 `cols` 里那些目标列：`out[k][l]` 对应 `row(i)[cols[k]][l]`。
+    /// 逐元素算术与整行算完完全相同（每个 logit 只依赖 (i, j) 这一对）。
+    pub fn row_gathered(&self, i: usize, cols: &[usize]) -> Vec<Vec<f32>> {
+        cols.iter()
+            .map(|&j| {
+                let tj = &self.ht[j];
+                let mut logits = vec![0.0f32; self.labels];
+                for (l, lg) in logits.iter_mut().enumerate() {
+                    let w = &self.output_weight[l * self.hid..(l + 1) * self.hid];
+                    let mut acc = 0.0f32;
+                    for h in 0..self.hid {
+                        acc += w[h] * gelu(self.hs[i][h] + tj[h]);
+                    }
+                    *lg = acc;
+                }
+                logits
+            })
+            .collect()
+    }
+
+    /// [`Self::row_gathered`] 的再裁剪：只算 `channels` 里那些标签通道，
+    /// `out[k][c]` 对应 `row(i)[cols[k]][channels[c]]`（cohesion 按任务裁剪用）。
+    pub fn row_gathered_channels(&self, i: usize, cols: &[usize], channels: &[usize]) -> Vec<Vec<f32>> {
+        cols.iter()
+            .map(|&j| {
+                let tj = &self.ht[j];
+                channels
+                    .iter()
+                    .map(|&l| {
+                        let w = &self.output_weight[l * self.hid..(l + 1) * self.hid];
+                        let mut acc = 0.0f32;
+                        for h in 0..self.hid {
+                            acc += w[h] * gelu(self.hs[i][h] + tj[h]);
+                        }
+                        acc
+                    })
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -336,18 +379,39 @@ impl RelationWiseProjection {
         let mut out = Vec::with_capacity(self.target.len() / (self.rels * self.hid));
         for j in 0..self.target.len() / (self.rels * self.hid) {
             let mut logits = vec![0.0f32; self.rels];
-            for rel in 0..self.rels {
+            for (rel, lg) in logits.iter_mut().enumerate() {
                 let si = &self.source[i * self.rels * self.hid + rel * self.hid..][..self.hid];
                 let tj = &self.target[j * self.rels * self.hid + rel * self.hid..][..self.hid];
                 let mut acc = 0.0f32;
                 for h in 0..self.hid {
                     acc += self.classifier[h * self.rels + rel] * gelu(si[h] + tj[h]);
                 }
-                logits[rel] = acc;
+                *lg = acc;
             }
             out.push(logits);
         }
         out
+    }
+
+    /// 只算 `cols` 里那些目标列：`out[k][rel]` 对应 `row(i)[cols[k]][rel]`。
+    pub fn row_gathered(&self, i: usize, cols: &[usize]) -> Vec<Vec<f32>> {
+        let n_rows = self.target.len() / (self.rels * self.hid);
+        cols.iter()
+            .map(|&j| {
+                assert!(j < n_rows, "cohesion 目标列 {j} 越界（共 {n_rows}）");
+                let mut logits = vec![0.0f32; self.rels];
+                for (rel, lg) in logits.iter_mut().enumerate() {
+                    let si = &self.source[i * self.rels * self.hid + rel * self.hid..][..self.hid];
+                    let tj = &self.target[j * self.rels * self.hid + rel * self.hid..][..self.hid];
+                    let mut acc = 0.0f32;
+                    for h in 0..self.hid {
+                        acc += self.classifier[h * self.rels + rel] * gelu(si[h] + tj[h]);
+                    }
+                    *lg = acc;
+                }
+                logits
+            })
+            .collect()
     }
 }
 

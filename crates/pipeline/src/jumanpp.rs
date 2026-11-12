@@ -6,10 +6,11 @@
 //! （词素行首字段，按 rhoknp 的 `^([^ ]+| [^ ]*)` 取）。
 //! 词素其余字段（读方／原形／活用／意味素性…）阶段 7 做 KNP 输出时再解析。
 
-/// 一条词素行解析后的最小集：surf 供分窗计 token 数，raw 留给阶段 7。
+/// 一条词素行解析后的最小集：surf/lemma 供分窗与 KNP 组装，raw 留档。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MorphemeLine {
     pub surf: String,
+    pub lemma: String,
     pub raw: String,
 }
 
@@ -87,6 +88,7 @@ fn flush(lines: &[&str]) -> MorphemeLine {
     let raw = lines[0].to_string();
     MorphemeLine {
         surf: unescape(surf_of_line(lines[0]).unwrap_or_default()),
+        lemma: unescape(lemma_of_line(lines[0]).unwrap_or_default()),
         raw,
     }
 }
@@ -108,6 +110,34 @@ pub fn surf_of_line(line: &str) -> Option<String> {
     }
     let end = line.find(' ').unwrap_or(line.len());
     Some(line[..end].to_string())
+}
+
+/// 词素行第 3 段（lemma）。char 阶段产出里空格已转义成 `\␣`，
+/// 段内不会有裸空格，按「跳过 surf、reading 两段」取第三段即可。
+pub fn lemma_of_line(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+    // surf 段宽度与 surf_of_line 相同
+    let mut pos = if bytes[0] == b' ' {
+        line[1..].find(' ').map(|i| i + 1).unwrap_or(line.len())
+    } else {
+        line.find(' ').unwrap_or(line.len())
+    };
+    if pos >= line.len() {
+        return None;
+    }
+    let rest = line[pos..].trim_start_matches(' ');
+    // reading 段
+    pos = rest.find(' ').unwrap_or(rest.len());
+    if pos >= rest.len() {
+        return None;
+    }
+    let rest2 = rest[pos..].trim_start_matches(' ');
+    // lemma 段
+    let end = rest2.find(' ').unwrap_or(rest2.len());
+    Some(rest2[..end].to_string())
 }
 
 /// rhoknp morpheme.py:310-311 的反转义：`\t`→制表符、`\␣`→空格。

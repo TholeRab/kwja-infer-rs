@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*", "cli"]
+members = ["crates/*", "cli", "."]
 
 [workspace.package]
 version = "0.1.0"
@@ -19,3 +19,12 @@ ort = { version = "2.0.0-rc.15", default-features = false, features = [
     "cuda",
     "load-dynamic",
 ] }
+
+[package]
+name = "kwja-gates"
+version.workspace = true
+edition.workspace = true
+
+[dev-dependencies]
+kwja-encoder = { path = "crates/encoder" }
+kwja-pipeline = { path = "crates/pipeline" }

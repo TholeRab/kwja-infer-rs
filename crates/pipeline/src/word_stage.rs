@@ -13,11 +13,13 @@ use crate::jumanpp;
 use crate::window::{SequenceSplitter, target_sentence_flags};
 use kwja_tokenizer::word_side::WordTokenizer;
 
-/// 一句：sid ＋ 词素 surf 列表（surf 供按词预切分计 token）。
+/// 一句：sid ＋ 词素 surf 列表（surf 供按词预切分计 token）＋ lemma 列表
+/// （char 阶段的正規化形，阶段 7 里作 norm 查词典/jinf）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WordSentence {
     pub sid: String,
     pub surfs: Vec<String>,
+    pub lemmas: Vec<String>,
 }
 
 /// 扁平文档：doc_id ＋ 句子序列。
@@ -44,6 +46,14 @@ impl WordWindow {
             .collect()
     }
 
+    /// 窗内全部词素 lemma（norm）。
+    pub fn lemmas(&self) -> Vec<String> {
+        self.sentences
+            .iter()
+            .flat_map(|s| s.lemmas.iter().cloned())
+            .collect()
+    }
+
     /// 每句是否目标句（`target_sentence_flags`，按本窗 doc_id 的 stride 判）。
     pub fn target_sentence_flags(&self) -> Vec<bool> {
         target_sentence_flags(&self.doc_id, self.sentences.len())
@@ -58,7 +68,8 @@ pub fn parse_jumanpp_document(text: &str, doc_id: &str) -> WordDocument {
         let parsed = jumanpp::parse_sentence(&sent_text);
         sentences.push(WordSentence {
             sid: parsed.sid,
-            surfs: parsed.morphemes.into_iter().map(|m| m.surf).collect(),
+            surfs: parsed.morphemes.iter().map(|m| m.surf.clone()).collect(),
+            lemmas: parsed.morphemes.iter().map(|m| m.lemma.clone()).collect(),
         });
     }
     WordDocument {

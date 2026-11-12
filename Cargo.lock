@@ -441,6 +441,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "kwja-gates"
+version = "0.1.0"
+dependencies = [
+ "kwja-encoder",
+ "kwja-pipeline",
+]
+
+[[package]]
 name = "kwja-heads"
 version = "0.1.0"
 dependencies = [
@@ -476,6 +484,7 @@ dependencies = [
  "kwja-tokenizer",
  "ndarray",
  "regex",
+ "serde",
  "serde_json",
  "thiserror",
 ]
