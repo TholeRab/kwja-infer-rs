@@ -1,2 +1,34 @@
-//! CUDA EP 装配与断言（阶段 1 落地）：active_providers() 不含 CUDAExecutionProvider 时拒绝启动，
-//! 并记录「形状算子留在 CPU」告警的核验结果。
+//! CUDA EP 装配与断言。启动时 active_providers 必须真含 CUDA，否则拒绝：
+//! ORT 曾静默回退 CPU，慢 18.8 倍且不报错（事实账 §六）。
+
+use ort::ep::{CPU, CUDA, ExecutionProviderDispatch};
+
+use crate::EncoderError;
+
+/// 设备选择，与 CLI `--device` 对应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Device {
+    /// 有 CUDA 用 CUDA，否则 CPU。
+    Auto,
+    Cpu,
+    Cuda,
+}
+
+/// 按设备装配 EP 列表。CUDA 排在 CPU 前：CUDA 不支持的算子由 ORT 自动回落 CPU。
+pub fn execution_providers(device: Device) -> Vec<ExecutionProviderDispatch> {
+    match device {
+        Device::Cpu => vec![CPU::default().build()],
+        Device::Auto | Device::Cuda => vec![CUDA::default().build(), CPU::default().build()],
+    }
+}
+
+/// 启动断言：装配出的 provider 名单里必须出现 CUDA。
+pub fn assert_cuda(providers: &[String]) -> Result<(), EncoderError> {
+    if providers.iter().any(|p| p.contains("CUDA")) {
+        Ok(())
+    } else {
+        Err(EncoderError::Session(format!(
+            "active_providers 不含 CUDA：{providers:?}"
+        )))
+    }
+}

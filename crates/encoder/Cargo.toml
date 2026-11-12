@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "api-23"] }
-ndarray = "0.16"
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "api-23", "cuda", "load-dynamic"] }
+ndarray = "0.17"
 thiserror = "2"

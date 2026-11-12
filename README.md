@@ -15,9 +15,15 @@ KWJA 推理的 Rust 侧实现：ONNX Runtime（CUDA）＋ tokenizers，目标是
 ## 构建
 
 ```bash
-cargo build            # ORT_LIB_PATH 已写死在 .cargo/config.toml
+cargo build
 cargo clippy --workspace --all-targets
 ```
 
-运行时需要 `onnxruntime.dll` 与 `onnxruntime_providers_cuda.dll` 可被加载：
-把 `../外部素材目录/ort/1.23.2/onnxruntime/capi` 加进 `PATH`。
+## 运行时的 DLL
+
+- `onnxruntime.dll` 由 `ort::init_from(绝对路径)` 显式加载（`load-dynamic` feature），默认指向
+  `../外部素材目录/ort/1.23.2/onnxruntime/capi/onnxruntime.dll`，可用环境变量 `KWJA_ORT_DLL` 覆盖。
+  **不能靠链接期导入 + PATH**：本机 `C:\Windows\System32` 有一份旧版 `onnxruntime.dll`（1.17.x），
+  Windows 加载器对静态导入的搜索顺序是 exe 目录 → System32 → PATH，System32 永远压过 PATH。
+- CUDA 运行时依赖（cudart64_12、cudnn64_9、cublas64_12 等）不在 System32，需在 `PATH` 里加
+  `../Python 环境/Lib/site-packages/torch/lib`；`onnxruntime_providers_cuda.dll` 与主 DLL 同目录，可被找到。

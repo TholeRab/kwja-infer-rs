@@ -8,5 +8,5 @@ kwja-normalize = { path = "../normalize" }
 kwja-tokenizer = { path = "../tokenizer" }
 kwja-encoder = { path = "../encoder" }
 kwja-heads = { path = "../heads" }
-ndarray = "0.16"
+ndarray = "0.17"
 thiserror = "2"
