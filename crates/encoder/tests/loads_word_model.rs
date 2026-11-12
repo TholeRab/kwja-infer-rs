@@ -4,9 +4,19 @@
 use kwja_encoder::ort_backend::{Device, OrtBackend};
 use kwja_encoder::{Encoder, WordEncoderInput};
 
+/// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
+/// ★ 起素材一律在本仓 assets/ 下，不再引用 参考实现仓。
+fn repo_path(rel: &str) -> String {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|a| a.join(rel))
+        .find(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| panic!("仓内找不到 {}", rel))
+}
 fn onnx_dir() -> std::path::PathBuf {
     std::env::var("KWJA_ONNX_DIR")
-        .unwrap_or_else(|_| r"外部素材\_cache\onnx".to_string())
+        .unwrap_or_else(|_| repo_path("assets/models"))
         .into()
 }
 

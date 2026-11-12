@@ -10,6 +10,16 @@ use kwja_encoder::ort_backend::{Device, OrtBackend};
 use kwja_normalize::nfkc::normalize_text;
 use kwja_pipeline::char_stage::CharStage;
 
+/// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
+/// ★ 起素材一律在本仓 assets/ 下，不再引用 参考实现仓。
+fn repo_path(rel: &str) -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|a| a.join(rel))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| panic!("仓内找不到 {}", rel))
+}
+
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus")
 }
@@ -20,12 +30,12 @@ fn fixtures_dir() -> PathBuf {
 
 fn onnx_dir() -> PathBuf {
     std::env::var("KWJA_ONNX_DIR")
-        .unwrap_or_else(|_| r"外部素材\_cache\onnx".to_string())
+        .unwrap_or_else(|_| repo_path("assets/models").to_string_lossy().into_owned())
         .into()
 }
 
 fn vocab_txt() -> PathBuf {
-    let snapshots = PathBuf::from(r"外部素材\_cache\hf\hub")
+    let snapshots = repo_path("assets/tokenizers")
         .join("models--ku-nlp--deberta-v2-base-japanese-char-wwm")
         .join("snapshots");
     let mut hits: Vec<PathBuf> = std::fs::read_dir(&snapshots)

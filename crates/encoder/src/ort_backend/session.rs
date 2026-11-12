@@ -24,11 +24,33 @@ static ENVIRONMENT: OnceLock<Result<Environment, String>> = OnceLock::new();
 /// 本机 System32 里有一份旧版 onnxruntime.dll（1.17.x），Windows 加载器对静态导入的
 /// 搜索顺序是 exe 目录 → System32 → PATH，System32 永远压过 PATH——实测正是它导致
 /// 「requested API version 23 not available, current ORT 1.17.1」。运行期显式指路才绕得开。
+/// ★素材在本仓 assets/ 下（ 起不再引用 参考实现仓）。
+/// 查找顺序：KWJA_ORT_DLL 环境变量 → 从 crate 清单目录向上找 assets/ort/...
+/// → 再从 exe 所在目录向上找（打包分发时走后者）。
 fn ort_dll_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("KWJA_ORT_DLL") {
         return p.into();
     }
-    r"外部素材\_cache\ort\1.23.2\onnxruntime\capi\onnxruntime.dll".into()
+    const REL: &str = "assets/ort/onnxruntime/capi/onnxruntime.dll";
+    // 编译期：crate 在 crates/encoder/，往上两级就是仓根
+    let from_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|a| a.join(REL))
+        .find(|p| p.is_file());
+    if let Some(p) = from_manifest {
+        return p;
+    }
+    // 运行期：分配后的 exe 旁边，或往上若干级
+    if let Ok(exe) = std::env::current_exe() {
+        let found = exe
+            .ancestors()
+            .map(|a| a.join(REL))
+            .find(|p| p.is_file());
+        if let Some(p) = found {
+            return p;
+        }
+    }
+    panic!("找不到 onnxruntime.dll。已试过 KWJA_ORT_DLL、仓根/assets/ort/...、exe 上溯路径");
 }
 
 /// CUDA/cuDNN 运行库预载清单（torch/lib 内，**按依赖序**）。

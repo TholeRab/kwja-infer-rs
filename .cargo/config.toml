@@ -1,4 +1,7 @@
-# 本机 ORT（onnxruntime-gpu 1.23.2，来自 外部素材目录，见 实施方案 §二）。
-# ort-sys 构建脚本从这里取 onnxruntime.lib 链接；运行时还需把同目录加进 PATH 找 onnxruntime.dll。
+# ORT 素材在**本仓内** assets/ort/（ 起不再引用 参考实现仓）。
+# 版本：onnxruntime-gpu 1.23.2；来源见 assets/ort/SOURCE.md。
+#
+# 运行时走 load-dynamic（ort feature），不靠链接期导入，所以这里只需要指 DLL 目录；
+# 实际加载由 crates/encoder/src/ort_backend/session.rs 的 ort_dll_path() 显式指路。
 [env]
-ORT_LIB_PATH = "外部素材目录/ort/1.23.2/onnxruntime/capi"
+ORT_LIB_PATH = { value = "assets/ort/onnxruntime/capi", relative = true }

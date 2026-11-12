@@ -6,8 +6,18 @@ use kwja_tokenizer::char_side::CharTokenizer;
 use kwja_tokenizer::word_side::WordTokenizer;
 use std::path::PathBuf;
 
+/// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
+/// ★ 起素材一律在本仓 assets/ 下，不再引用 参考实现仓。
+fn repo_path(rel: &str) -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|a| a.join(rel))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| panic!("仓内找不到 {}", rel))
+}
+
 fn tokenizer_json(hub_dir_name: &str) -> PathBuf {
-    let snapshots = PathBuf::from(r"外部素材\_cache\hf\hub")
+    let snapshots = repo_path("assets/tokenizers")
         .join(hub_dir_name)
         .join("snapshots");
     let mut hits: Vec<PathBuf> = std::fs::read_dir(&snapshots)
@@ -20,7 +30,7 @@ fn tokenizer_json(hub_dir_name: &str) -> PathBuf {
 }
 
 fn vocab_txt(hub_dir_name: &str) -> PathBuf {
-    let snapshots = PathBuf::from(r"外部素材\_cache\hf\hub")
+    let snapshots = repo_path("assets/tokenizers")
         .join(hub_dir_name)
         .join("snapshots");
     let mut hits: Vec<PathBuf> = std::fs::read_dir(&snapshots)
