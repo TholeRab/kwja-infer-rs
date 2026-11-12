@@ -51,6 +51,18 @@ impl WordTokenizer {
         })
     }
 
+    /// 一句的词素 surf 列表在当前 tokenizer 下的 token 数
+    /// （`flat_word_document._token_len`：add_special_tokens=False、
+    /// is_split_into_words=True——Vec<String> 输入即按词预切分，
+    /// 逐词独立编码，与 Python 的 `.tokens()` 长度同源）。
+    pub fn surf_token_len(&self, surfs: &[String]) -> Result<usize, String> {
+        let encoding = self
+            .tokenizer
+            .encode(surfs.to_vec(), false)
+            .map_err(|e| e.to_string())?;
+        Ok(encoding.get_ids().len())
+    }
+
     /// 编码一个窗口的词素 surf 列表，输出与 Python `Encoding.merge` 后一致。
     pub fn encode_words(&self, surfs: &[String]) -> Result<EncodedInput, String> {
         let encoding = self
