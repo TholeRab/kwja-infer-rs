@@ -8,3 +8,6 @@
 /assets/tokenizers/
 /assets/cuda/
 /assets/dicts/
+
+# 提交说明临时文件（曾经被 git add -A 误收两次）
+/_msg*.txt
