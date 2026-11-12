@@ -1,0 +1,4 @@
+# 本机 ORT（onnxruntime-gpu 1.23.2，来自 外部素材目录，见 实施方案 §二）。
+# ort-sys 构建脚本从这里取 onnxruntime.lib 链接；运行时还需把同目录加进 PATH 找 onnxruntime.dll。
+[env]
+ORT_LIB_PATH = "外部素材目录/ort/1.23.2/onnxruntime/capi"

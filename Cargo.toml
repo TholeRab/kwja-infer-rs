@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/normalize",
+    "crates/tokenizer",
+    "crates/encoder",
+    "crates/heads",
+    "crates/pipeline",
+    "cli",
+]

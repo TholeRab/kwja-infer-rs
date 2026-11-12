@@ -1,0 +1,13 @@
+[package]
+name = "kwja-infer"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "kwja-infer"
+path = "src/main.rs"
+
+[dependencies]
+kwja-pipeline = { path = "../crates/pipeline" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"

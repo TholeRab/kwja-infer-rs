@@ -1,0 +1,12 @@
+[package]
+name = "kwja-pipeline"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kwja-normalize = { path = "../normalize" }
+kwja-tokenizer = { path = "../tokenizer" }
+kwja-encoder = { path = "../encoder" }
+kwja-heads = { path = "../heads" }
+ndarray = "0.16"
+thiserror = "2"
