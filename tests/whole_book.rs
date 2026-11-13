@@ -1,8 +1,7 @@
-//! 阶段 7 闸：word 阶段（13 头＋组装＋KNP 输出）与 Python 扁平链**逐字节**一致。
+//! word 阶段（13 头、组装、KNP 输出）与 Python 参考实现逐字节一致。
 //!
-//! 基线由 `导出工具/导出Rust侧阶段7权重与基准.py` 生成
-//! （真 word 模块＋CUDA，输入＝本仓 char 阶段的产出 fixture）。
-//! 闸口径（实施方案 §四 阶段 7）：先单章一致，再整书一致。
+//! 基线 fixtures 由真 word 模型加 CUDA 生成，输入是本仓 char 阶段的产出 fixture。
+//! 对齐口径：先单章一致，再整书一致。
 
 use std::path::PathBuf;
 
@@ -31,7 +30,7 @@ fn onnx_dir() -> PathBuf {
 
 /// 测试设备由 KWJA_DEVICE 决定：cuda（默认，断言 CUDA 真生效）／cpu
 ///（**纯 CPU**，断言 provider 里没有 CUDA）／auto（打印实际 provider）。
-/// ★CPU 形态的最终检验＝10 章闸；整书（4691 窗）只跑 GPU——CPU 跑整书太慢。
+/// 纯 CPU 形态只跑到 10 章；整书只跑 GPU，CPU 跑整书太慢。
 fn backend() -> Box<dyn Encoder> {
     let dir = onnx_dir();
     let dev = std::env::var("KWJA_DEVICE").unwrap_or_default();
@@ -52,8 +51,8 @@ fn backend() -> Box<dyn Encoder> {
         device,
     )
     .expect("编码后端创建失败");
-    // ★断言设备真到位：EP 起不来时 ORT 会静默回落 CPU，
-    // 产出虽应逐字节相同，但那就不是目标配置了（事实账 §六）。
+    // 断言设备真到位：EP 起不来时 ORT 会静默回落 CPU，
+    // 产出虽应逐字节相同，但那就不是目标配置了。
     // tract 后端恒为 CPU 单线程，不做 EP 断言。
     let providers = backend.active_providers();
     if !rust_backend && want_cuda {
@@ -117,7 +116,7 @@ fn run_case(char_fixture: &str, knp_fixture: &str, what: &str) {
     let dump =
         std::env::temp_dir().join(format!("kwja_got_{}", knp_fixture.replace(".txt", ".knp")));
     std::fs::write(&dump, &got).expect("实际输出写盘失败");
-    eprintln!("实际输出 → {}", dump.display());
+    eprintln!("实际输出已写入 {}", dump.display());
     assert_bytes_equal(&got, &expected, what);
 }
 
@@ -126,8 +125,8 @@ fn word_knp_ch1_matches() {
     run_case("char_stage_ch1.txt", "word_knp_ch1.txt", "第 1 章 KNP");
 }
 
-/// 分级闸：3 章 / 6 章。窗口数分别约 250 / 640，秒级到分钟级，
-/// 用来在改动的第一时间发现回归，不必每次等到整书（4691 窗）。
+/// 分层测试：3 章 / 6 章，秒级到分钟级，
+/// 用来在改动的第一时间发现回归，不必每次等到整书。
 #[test]
 fn word_knp_three_chapters_match() {
     run_case("char_stage_3ch.txt", "word_knp_3ch.txt", "3 章 KNP");
@@ -138,7 +137,7 @@ fn word_knp_six_chapters_match() {
     run_case("char_stage_6ch.txt", "word_knp_6ch.txt", "6 章 KNP");
 }
 
-/// CPU 形态的最终检验：前 10 章（KWJA_DEVICE=cpu 跑这个，不跑整书）。
+/// 纯 CPU 形态跑前 10 章（KWJA_DEVICE=cpu 跑这个，不跑整书）。
 #[test]
 fn word_knp_ten_chapters_match() {
     run_case("char_stage_10ch.txt", "word_knp_10ch.txt", "10 章 KNP");
