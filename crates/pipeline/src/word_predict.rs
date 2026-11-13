@@ -142,11 +142,27 @@ impl WordPredictor {
             .collect::<Result<Vec<_>, String>>()?;
         let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
 
-        // ---- 阶段二：按窗序合并（串行，状态依赖历史窗）----
+        // ---- 阶段二：合并（owner 预计算后按窗并行；落账仍在窗序里做）----
+        // ★owner/order 只由「各窗的目标句集合」这个前缀序列决定（非首窗的 end
+        //   恰好推进 stride 句 ⇒ 目标句集合按窗不重叠），可以事先算完；
+        //   合并体视图只依赖「本窗产物 ＋ owner ＋ 之前各窗的解码产物」，
+        //   各窗合并互不依赖 ⇒ 并行。三类行按窗序落账，键互不冲突，
+        //   结果与逐窗串行 absorb 逐字节一致。
         let t_abs = std::time::Instant::now();
-        let mut buf = Buffer::default();
-        for out in outs.into_iter().flatten() {
-            buf.absorb(out, &self.tables);
+        let (owner, order) = precompute_owner(&outs);
+        let live: Vec<&WindowOut> = outs.iter().flatten().collect();
+        let absorbed: Vec<AbsorbedWin> = live
+            .par_iter()
+            .enumerate()
+            .map(|(w, out)| absorb_one(w, out, &live, &owner, &self.tables))
+            .collect();
+        let mut buf = Buffer {
+            order,
+            owner,
+            ..Default::default()
+        };
+        for a in absorbed {
+            buf.fold(a);
         }
         let abs_ms = t_abs.elapsed().as_secs_f64() * 1000.0;
 
@@ -612,13 +628,11 @@ struct DocBp {
     win_ms0: usize,
 }
 
-/// 留档的窗口数据（渲染用）。
+/// 留档的窗口数据（渲染用；合并期的 ranges/tgt_flags 不进留档）。
 struct StoredWin {
     flat: Vec<FlatMorpheme>,
     chunks: Vec<Chunk>,
     sids: Vec<String>,
-    ranges: Vec<(usize, usize)>,
-    tgt_flags: Vec<bool>,
 }
 
 /// 输出缓冲：首窗定稿、按插入序渲染。
@@ -632,152 +646,187 @@ struct Buffer {
     dis_rows: HashMap<(String, usize), String>,
 }
 
-impl Buffer {
-    fn absorb(&mut self, out: WindowOut, tables: &WordTables) {
-        let win = self.wins.len();
-        // 1) 先入册（cohesion 的合并体要用「上一窗结束时」的 owner 状态）
-        self.wins.push(StoredWin {
-            flat: out.flat,
-            chunks: out.chunks,
-            sids: out.sids,
-            ranges: out.ranges,
-            tgt_flags: out.tgt_flags,
-        });
-        let stored = &self.wins[win];
+/// 一次窗合并的产物：渲染要用的本窗留档 ＋ 三类行。
+/// 由 [`absorb_one`] 按窗并行产出，[`Buffer::fold`] 按窗序落账。
+struct AbsorbedWin {
+    win: StoredWin,
+    rel_rows: HashMap<(String, usize), Vec<RelRow>>,
+    dis_rows: HashMap<(String, usize), String>,
+    dep_rows: HashMap<String, (Vec<i32>, Vec<usize>)>,
+}
 
-        // 2) 合并体视图：缓冲句用首次那窗的结构（坐标平移对齐），否则本窗的
-        //（统一持有克隆，规避生长中的借用）
-        let mut views: Vec<(usize, Chunk)> = Vec::with_capacity(stored.sids.len());
-        for (si, sid) in stored.sids.iter().enumerate() {
-            if let Some(&ow) = self.owner.get(sid)
-                && ow != win
-            {
-                let oi = self.wins[ow]
-                    .sids
-                    .iter()
-                    .position(|s| s == sid)
-                    .expect("缓冲句不在原窗");
-                let shift = stored.ranges[si].0 as i64 - self.wins[ow].ranges[oi].0 as i64;
-                views.push((si, shift_chunk(&self.wins[ow].chunks[oi], shift)));
-                continue;
-            }
-            views.push((si, stored.chunks[si].clone()));
-        }
-
-        // 3) renumber：基本句扁平列表（句内序号、head、素性、win_ms0）
-        let mut doc_bps: Vec<DocBp> = Vec::new();
-        for (si, ch) in &views {
-            let si = *si;
-            for (index, bp) in ch.phrases.iter().flat_map(|p| &p.bps).enumerate() {
-                doc_bps.push(DocBp {
-                    sid: stored.sids[si].clone(),
-                    index,
-                    head_gidx: bp.head_gi,
-                    head_text: bp.head_text.clone(),
-                    feats: bp.feats.clone(),
-                    win_ms0: bp.first_ms(),
-                });
+/// owner/order 预计算（原串行 absorb 第 1/7 步的前缀化）：
+/// sid 的 owner ＝ 它首次作为目标句出现的窗（**非跳过窗**里的序号，
+/// 与渲染时的 `wins` 下标一致）。目标句集合按窗不重叠 ⇒ 逐窗扫一遍即得，
+/// 不依赖任何合并产物。
+fn precompute_owner(outs: &[Option<WindowOut>]) -> (HashMap<String, usize>, Vec<String>) {
+    let mut owner: HashMap<String, usize> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for (win, out) in outs.iter().flatten().enumerate() {
+        for (si, sid) in out.sids.iter().enumerate() {
+            if out.tgt_flags[si] && !owner.contains_key(sid) {
+                order.push(sid.clone());
+                owner.insert(sid.clone(), win);
             }
         }
+    }
+    (owner, order)
+}
 
-        let dbg2 = std::env::var("KWJA_TIMING").is_ok();
-        let tt = std::time::Instant::now();
-        // 4) cohesion（目标 = 本窗目标句的基本句；候选 = 合并体全部基本句＋special）
-        let tgt_sids: HashSet<&str> = stored
-            .sids
-            .iter()
-            .enumerate()
-            .filter(|(si, _)| stored.tgt_flags[*si])
-            .map(|(_, s)| s.as_str())
-            .collect();
-        let targets: HashSet<(String, usize)> = doc_bps
-            .iter()
-            .filter(|b| tgt_sids.contains(b.sid.as_str()))
-            .map(|b| (b.sid.clone(), b.index))
-            .collect();
-        // 同名键先清（上游每窗对 targets 先 pop 再 append）
-        for key in &targets {
-            self.rel_rows.remove(key);
-        }
+/// 单窗合并（原 `Buffer::absorb` 的第 2–6 步）。
+///
+/// ★只读三样：本窗解码产物 `out`、预计算的 `owner`、之前各窗的解码产物
+///   `live`（合并体视图里缓冲句的 chunk 来源）。不碰任何累积账本 ⇒
+///   窗与窗可并行。产出的行按窗序 [`Buffer::fold`] 落账；目标键按窗不重叠，
+///   落账顺序不影响结果。
+fn absorb_one(
+    win: usize,
+    out: &WindowOut,
+    live: &[&WindowOut],
+    owner: &HashMap<String, usize>,
+    tables: &WordTables,
+) -> AbsorbedWin {
+    // 2) 合并体视图：缓冲句用首次那窗的结构（坐标平移对齐），否则本窗的
+    //（统一持有克隆，规避生长中的借用）
+    let mut views: Vec<(usize, Chunk)> = Vec::with_capacity(out.sids.len());
+    for (si, sid) in out.sids.iter().enumerate() {
+        if let Some(&ow) = owner.get(sid)
+            && ow != win
         {
-            let cohesion_proj = out.cohesion_proj.expect("cohesion 投影缺失");
-            let bp_head_gi: Vec<usize> = doc_bps.iter().map(|b| b.head_gidx).collect();
-            let bp_index: Vec<usize> = doc_bps.iter().map(|b| b.index).collect();
-            let bp_sid: Vec<String> = doc_bps.iter().map(|b| b.sid.clone()).collect();
-            let bp_head_text: Vec<String> = doc_bps.iter().map(|b| b.head_text.clone()).collect();
-            let bp_feats: Vec<OrderedFeats> = doc_bps.iter().map(|b| b.feats.clone()).collect();
-            let doc = CohesionDoc {
-                bp_head_gi: &bp_head_gi,
-                bp_index: &bp_index,
-                bp_sid: &bp_sid,
-                bp_head_text: &bp_head_text,
-                bp_feats: &bp_feats,
-            };
-            let sent_of_morpheme = &out.sent_of_morpheme;
-            let rows = add_cohesion(
-                &doc,
-                &|gi: usize, cols: &[usize]| cohesion_proj.row_gathered(gi, cols),
-                &tables.cohesion_tasks,
-                &|t: &str| tables.cohesion_task2name(t),
-                &|t: &str| tables.cohesion_task2rels(t),
-                &|a: usize, c: usize| sent_of_morpheme[a] == sent_of_morpheme[c],
-                &out.cohesion_special_indices,
-                &tables.dataset_special_tokens().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                &tables.exophora_referents,
-                tables.restrict_cohesion_target,
-                tables.cohesion_rels().len(),
-            );
-            for (bi, row) in rows {
-                let key = (doc_bps[bi].sid.clone(), doc_bps[bi].index);
-                if targets.contains(&key) {
-                    self.rel_rows.entry(key).or_default().push(row);
-                }
-            }
-        }
-
-        if dbg2 {
-            eprintln!("    cohesion {:.1} ms", tt.elapsed().as_secs_f64() * 1000.0);
-        }
-        let tc = std::time::Instant::now();
-        // 5) discourse（节 = 带 節-区切 的基本句；行列 = 节首词素）
-        {
-            let discourse_proj = out.discourse_proj.expect("discourse 投影缺失");
-            let cls: Vec<&DocBp> = doc_bps
+            let oi = live[ow]
+                .sids
                 .iter()
-                .filter(|b| b.feats.iter().any(|(k, _)| k.starts_with("節-区切")))
-                .collect();
-            let rows = add_discourse(
-                &cls.iter().map(|b| b.win_ms0).collect::<Vec<_>>(),
-                &cls.iter().map(|b| b.index).collect::<Vec<_>>(),
-                &cls.iter().map(|b| b.sid.clone()).collect::<Vec<_>>(),
-                &|i: usize, j: usize| discourse_proj.row_gathered(i, &[j]).remove(0),
-                &tables.discourse_relations,
-                tables.discourse_threshold,
-            );
-            for (ci, s) in rows {
-                let key = (cls[ci].sid.clone(), cls[ci].index);
-                if targets.contains(&key) {
-                    self.dis_rows.insert(key, s);
-                }
+                .position(|s| s == sid)
+                .expect("缓冲句不在原窗");
+            let shift = out.ranges[si].0 as i64 - live[ow].ranges[oi].0 as i64;
+            views.push((si, shift_chunk(&live[ow].chunks[oi], shift)));
+            continue;
+        }
+        views.push((si, out.chunks[si].clone()));
+    }
+
+    // 3) renumber：基本句扁平列表（句内序号、head、素性、win_ms0）
+    let mut doc_bps: Vec<DocBp> = Vec::new();
+    for (si, ch) in &views {
+        let si = *si;
+        for (index, bp) in ch.phrases.iter().flat_map(|p| &p.bps).enumerate() {
+            doc_bps.push(DocBp {
+                sid: out.sids[si].clone(),
+                index,
+                head_gidx: bp.head_gi,
+                head_text: bp.head_text.clone(),
+                feats: bp.feats.clone(),
+                win_ms0: bp.first_ms(),
+            });
+        }
+    }
+
+    // 4) cohesion（目标 = 本窗目标句的基本句；候选 = 合并体全部基本句＋special）
+    let tgt_sids: HashSet<&str> = out
+        .sids
+        .iter()
+        .enumerate()
+        .filter(|(si, _)| out.tgt_flags[*si])
+        .map(|(_, s)| s.as_str())
+        .collect();
+    let targets: HashSet<(String, usize)> = doc_bps
+        .iter()
+        .filter(|b| tgt_sids.contains(b.sid.as_str()))
+        .map(|b| (b.sid.clone(), b.index))
+        .collect();
+    // 本窗目标键此前不存在于账本（键按窗唯一），原先「先清再加」在落账侧做
+    let mut rel_rows: HashMap<(String, usize), Vec<RelRow>> = HashMap::new();
+    {
+        let cohesion_proj = out.cohesion_proj.as_ref().expect("cohesion 投影缺失");
+        let bp_head_gi: Vec<usize> = doc_bps.iter().map(|b| b.head_gidx).collect();
+        let bp_index: Vec<usize> = doc_bps.iter().map(|b| b.index).collect();
+        let bp_sid: Vec<String> = doc_bps.iter().map(|b| b.sid.clone()).collect();
+        let bp_head_text: Vec<String> = doc_bps.iter().map(|b| b.head_text.clone()).collect();
+        let bp_feats: Vec<OrderedFeats> = doc_bps.iter().map(|b| b.feats.clone()).collect();
+        let doc = CohesionDoc {
+            bp_head_gi: &bp_head_gi,
+            bp_index: &bp_index,
+            bp_sid: &bp_sid,
+            bp_head_text: &bp_head_text,
+            bp_feats: &bp_feats,
+        };
+        let sent_of_morpheme = &out.sent_of_morpheme;
+        let rows = add_cohesion(
+            &doc,
+            &|gi: usize, cols: &[usize]| cohesion_proj.row_gathered(gi, cols),
+            &tables.cohesion_tasks,
+            &|t: &str| tables.cohesion_task2name(t),
+            &|t: &str| tables.cohesion_task2rels(t),
+            &|a: usize, c: usize| sent_of_morpheme[a] == sent_of_morpheme[c],
+            &out.cohesion_special_indices,
+            &tables.dataset_special_tokens().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &tables.exophora_referents,
+            tables.restrict_cohesion_target,
+            tables.cohesion_rels().len(),
+        );
+        for (bi, row) in rows {
+            let key = (doc_bps[bi].sid.clone(), doc_bps[bi].index);
+            if targets.contains(&key) {
+                rel_rows.entry(key).or_default().push(row);
             }
         }
-        if dbg2 {
-            eprintln!("    discourse {:.1} ms（doc_bps {}）",
-                tc.elapsed().as_secs_f64() * 1000.0, doc_bps.len());
-        }
+    }
 
-        // 6) 依存结果首窗定稿
-        for (sid, d) in out.dep {
+    // 5) discourse（节 = 带 節-区切 的基本句；行列 = 节首词素）
+    let mut dis_rows: HashMap<(String, usize), String> = HashMap::new();
+    {
+        let discourse_proj = out.discourse_proj.as_ref().expect("discourse 投影缺失");
+        let cls: Vec<&DocBp> = doc_bps
+            .iter()
+            .filter(|b| b.feats.iter().any(|(k, _)| k.starts_with("節-区切")))
+            .collect();
+        let rows = add_discourse(
+            &cls.iter().map(|b| b.win_ms0).collect::<Vec<_>>(),
+            &cls.iter().map(|b| b.index).collect::<Vec<_>>(),
+            &cls.iter().map(|b| b.sid.clone()).collect::<Vec<_>>(),
+            &|i: usize, j: usize| discourse_proj.row_gathered(i, &[j]).remove(0),
+            &tables.discourse_relations,
+            tables.discourse_threshold,
+        );
+        for (ci, s) in rows {
+            let key = (cls[ci].sid.clone(), cls[ci].index);
+            if targets.contains(&key) {
+                dis_rows.insert(key, s);
+            }
+        }
+    }
+
+    // 6) 依存结果（键 = 目标句 sid，按窗唯一；「首窗定稿」语义在 fold 里保留）
+    let dep_rows: HashMap<String, (Vec<i32>, Vec<usize>)> = out.dep.clone();
+
+    AbsorbedWin {
+        win: StoredWin {
+            flat: out.flat.clone(),
+            chunks: out.chunks.clone(),
+            sids: out.sids.clone(),
+        },
+        rel_rows,
+        dis_rows,
+        dep_rows,
+    }
+}
+
+impl Buffer {
+    /// 按窗序落账：把 [`absorb_one`] 的产物并进累积账本。
+    /// 目标键按窗不重叠 ⇒ rel/dis 的 insert 等价于原先的「先清再加」；
+    /// dep 保留 `or_insert` 的首窗定稿语义。wins 必须按窗序 push
+    /// （渲染按 owner 下标取窗）。
+    fn fold(&mut self, a: AbsorbedWin) {
+        for (key, rows) in a.rel_rows {
+            self.rel_rows.insert(key, rows);
+        }
+        for (key, s) in a.dis_rows {
+            self.dis_rows.insert(key, s);
+        }
+        for (sid, d) in a.dep_rows {
             self.dep_rows.entry(sid).or_insert(d);
         }
-
-        // 7) 缓冲登记（首窗定稿）
-        for (si, sid) in stored.sids.iter().enumerate() {
-            if stored.tgt_flags[si] && !self.owner.contains_key(sid) {
-                self.order.push(sid.clone());
-                self.owner.insert(sid.clone(), win);
-            }
-        }
+        self.wins.push(a.win);
     }
 
     /// 渲染整份 KNP 文本（`_flush` ＋ `_flat_lines`）。
