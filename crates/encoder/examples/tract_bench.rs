@@ -1,9 +1,11 @@
-//! tract 编码器微基准：量单窗前向耗时，并验证多线程并发是否真的摊得开。
+//! tract 编码器微基准：量单窗前向耗时，并分别验证两种并行是否真的摊得开。
 //!
-//! 用法：cargo run --release -p kwja-encoder --example tract_bench
-//! （KWJA_BACKEND=tract 时后端即 tract；本示例只测 tract 路径。）
+//! 四个阶段：①单线程内核串行 4 窗；②单线程内核并发 12 窗（窗间并行）；
+//! ③12 线程内核串行 4 窗（窗内并行，tract multithread-mm）；④12 线程内核并发 12 窗。
+//! 用法：KWJA_BACKEND=tract cargo run --release -p kwja-encoder --example tract_bench
 
 use kwja_encoder::{make_backend, ParallelEncoder, WordEncoderInput};
+use tract_linalg::multithread::{set_default_executor, Executor};
 
 fn fake_input() -> WordEncoderInput {
     let seq = 256usize;
@@ -22,6 +24,27 @@ fn fake_input() -> WordEncoderInput {
     }
 }
 
+fn timed(label: &str, rounds: usize, par: &dyn ParallelEncoder, input: &WordEncoderInput) {
+    let t = std::time::Instant::now();
+    for _ in 0..rounds {
+        par.run_word_shared(input).expect("前向失败");
+    }
+    println!("{label}：{} 窗共 {:?}（均 {:?}/窗）", rounds, t.elapsed(), t.elapsed() / rounds as u32);
+}
+
+fn timed_concurrent(label: &str, threads: usize, par: &dyn ParallelEncoder, input: &WordEncoderInput) {
+    let t = std::time::Instant::now();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| scope.spawn(|| par.run_word_shared(input).expect("并发前向失败")))
+            .collect();
+        for handle in handles {
+            handle.join().expect("并发线程失败");
+        }
+    });
+    println!("{label}：并发 {threads} 窗共 {:?}", t.elapsed());
+}
+
 fn main() {
     let mut backend = make_backend(
         "assets/models/char_dynamic.onnx",
@@ -32,30 +55,15 @@ fn main() {
     let par = backend.as_parallel().expect("该后端不支持共享调用");
     let input = fake_input();
 
-    // 预热＋建计划
     let t = std::time::Instant::now();
     par.run_word_shared(&input).expect("预热前向失败");
-    println!("首窗（含建计划）{:?}", t.elapsed());
+    println!("预热（含建计划）{:?}", t.elapsed());
 
-    // 串行 4 窗
-    let t = std::time::Instant::now();
-    for _ in 0..4 {
-        par.run_word_shared(&input).expect("串行前向失败");
-    }
-    println!("串行 4 窗 {:?}", t.elapsed());
+    timed("① 单线程内核·串行", 4, par, &input);
+    timed_concurrent("② 单线程内核", 12, par, &input);
 
-    // rayon 并发 12 窗（12 核一档）
-    let t = std::time::Instant::now();
-    let inputs: Vec<_> = (0..12).map(|_| fake_input()).collect();
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = inputs
-            .iter()
-            .map(|i| scope.spawn(|| par.run_word_shared(i).expect("并发前向失败")))
-            .collect();
-        for handle in handles {
-            handle.join().expect("并发线程失败");
-        }
-    });
-    println!("并发 12 窗 {:?}", t.elapsed());
-    println!("线程池 = rayon 全局池，物理核数 = {}", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0));
+    set_default_executor(Executor::multithread(12));
+    timed("③ 12 线程内核·串行", 4, par, &input);
+    timed_concurrent("④ 12 线程内核", 12, par, &input);
+    println!("物理核数 = {}", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0));
 }

@@ -5,8 +5,9 @@ use std::path::Path;
 
 use ndarray::Array3;
 
+pub mod candle_backend;
+pub mod debertav2;
 pub mod ort_backend;
-pub mod tract_backend;
 
 /// 一次 word 前向的输入。字段语义与 ONNX 签名一一对应：
 /// `word_encoder7.onnx` 输入 input_ids [batch,seq]、attention_mask [batch,seq]、
@@ -45,16 +46,19 @@ pub enum EncoderError {
     Session(String),
 }
 
-/// 按 KWJA_BACKEND 选后端：缺省 ort；tract/rust = 纯 Rust tract 后端（无 ONNX Runtime）。
-/// device 只对 ort 有意义（tract 恒为 CPU 单线程）。
+/// 按 KWJA_BACKEND 选后端：缺省 ort（ONNX Runtime，DLL）；
+/// candle/rust = 纯 Rust candle 后端（无 ONNX Runtime、无 DLL，权重来自
+/// _cache/kwja/v2.4 的 .ckpt 转出的 safetensors，可用 KWJA_WORD_CKPT/
+/// KWJA_CHAR_CKPT 覆盖路径）。
+/// device 只对 ort 有意义（candle 恒为 CPU，多线程靠统一 rayon 池）。
 pub fn make_backend(
     char_model: impl AsRef<Path>,
     word_model: impl AsRef<Path>,
     device: ort_backend::Device,
 ) -> Result<Box<dyn Encoder>, EncoderError> {
     match std::env::var("KWJA_BACKEND").unwrap_or_default().as_str() {
-        "tract" | "rust" => {
-            Ok(Box::new(tract_backend::TractBackend::new(char_model, word_model)?))
+        "candle" | "rust" => {
+            Ok(Box::new(candle_backend::CandleBackend::new(char_model, word_model)?))
         }
         _ => Ok(Box::new(ort_backend::OrtBackend::new(char_model, word_model, device)?)),
     }
