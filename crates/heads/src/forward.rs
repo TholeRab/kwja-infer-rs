@@ -11,7 +11,6 @@
 //! safetensors 读入是手写的极简解析：8 字节小端头长 ＋ JSON 头 ＋ 数据区，
 //! 只认 `F32`；不值得为这一个格式引依赖。权重整文件读入后按名拷出。
 
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 

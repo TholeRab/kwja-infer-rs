@@ -464,6 +464,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "kwja-encoder",
+ "kwja-normalize",
  "kwja-pipeline",
 ]
 

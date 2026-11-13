@@ -8,6 +8,8 @@ name = "kwja-infer"
 path = "src/main.rs"
 
 [dependencies]
+kwja-encoder = { path = "../crates/encoder" }
+kwja-normalize = { path = "../crates/normalize" }
 kwja-pipeline = { path = "../crates/pipeline" }
 clap.workspace = true
 anyhow.workspace = true

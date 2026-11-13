@@ -52,21 +52,45 @@ fn char_stage() -> CharStage {
     CharStage::new(vocab_txt(), 512).expect("CharStage 构建失败")
 }
 
+/// 测试设备由 KWJA_DEVICE 决定：cuda（默认，断言 CUDA 真生效）／cpu
+///（**纯 CPU**，断言 provider 里没有 CUDA）／auto（打印实际 provider）。
+/// ★CPU 形态的最终检验＝10 章闸；整书只跑 GPU——CPU 跑整书太慢。
 fn backend() -> OrtBackend {
     let dir = onnx_dir();
+    let dev = std::env::var("KWJA_DEVICE").unwrap_or_default();
+    let want_cuda = dev.is_empty() || dev == "cuda";
+    let pure_cpu = dev == "cpu";
+    let device = if pure_cpu {
+        Device::Cpu
+    } else if want_cuda {
+        Device::Cuda
+    } else {
+        Device::Auto
+    };
     let backend = OrtBackend::new(
         dir.join("char_dynamic.onnx"),
         dir.join("word_encoder7.onnx"),
-        Device::Cuda,
+        device,
     )
     .expect("ORT 后端创建失败");
-    // ★必须显式断言 CUDA 生效：EP 起不来时 ORT 会静默回落 CPU，
+    // ★断言设备真到位：EP 起不来时 ORT 会静默回落 CPU，
     // 产出虽应逐字节相同，但那就不是目标配置了（事实账 §六）。
     let providers = backend.active_providers();
-    assert!(
-        providers.iter().any(|p| p.contains("CUDA")),
-        "active_providers 不含 CUDA（静默回落 CPU？）：{providers:?}"
-    );
+    if want_cuda {
+        assert!(
+            providers.iter().any(|p| p.contains("CUDA")),
+            "active_providers 不含 CUDA（静默回落 CPU？）：{providers:?}"
+        );
+    }
+    if pure_cpu {
+        assert!(
+            !providers.iter().any(|p| p.contains("CUDA")),
+            "要求纯 CPU，active_providers 却含 CUDA：{providers:?}"
+        );
+    }
+    if dev == "auto" {
+        eprintln!("active_providers：{providers:?}");
+    }
     backend
 }
 
@@ -148,6 +172,13 @@ fn three_chapters_match_python_byte_for_byte() {
 #[test]
 fn six_chapters_match_python_byte_for_byte() {
     run_tier(6, "char_stage_6ch.txt");
+}
+
+/// CPU 形态的最终检验：前 10 章（KWJA_DEVICE=cpu 跑这个，不跑整书）。
+/// 10 章的 doc_id 零填充宽度与整书相同（都是 2 位），基线可从整书切出。
+#[test]
+fn ten_chapters_match_python_byte_for_byte() {
+    run_tier(10, "char_stage_10ch.txt");
 }
 
 #[test]
