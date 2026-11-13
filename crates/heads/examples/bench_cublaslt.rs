@@ -49,6 +49,8 @@ struct Heur {
     algo: [u64; 8],
     workspace: usize,
     state: i32,
+    waves_count: f32,
+    reserved: [i32; 4],
 }
 
 const CUDA_R_32F: u32 = 0;
@@ -59,6 +61,7 @@ const ATTR_TRANSA: u32 = 3;
 const ATTR_TRANSB: u32 = 4;
 const ATTR_WS_BYTES: u32 = 1;
 const H2D: i32 = 1;
+const D2H: i32 = 2;
 
 fn lcg(seed: &mut u64) -> f32 {
     *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -149,7 +152,7 @@ fn main() {
             assert_eq!(pref_create(&mut pref), 0);
             let ws_cap = ws_size;
             assert_eq!(pref_attr(pref, ATTR_WS_BYTES, &ws_cap as *const usize as Ptr, 8), 0);
-            let mut hs = [Heur { algo: [0; 8], workspace: 0, state: -1 }; 8];
+            let mut hs = [Heur { algo: [0; 8], workspace: 0, state: -1, waves_count: 0.0, reserved: [0; 4] }; 8];
             let mut cnt = 0i32;
             assert_eq!(heuristic(lt, desc, la, lb, ld, ld, pref, 8, hs.as_mut_ptr(), &mut cnt), 0);
             assert!(cnt > 0 && hs[0].state == 0, "无可用算法");
@@ -157,14 +160,25 @@ fn main() {
 
             let alpha = 1.0f32;
             let beta = 0.0f32;
+            let algo = hs[0].algo;
+            let mut d_host = vec![0f32; m * n];
+            assert_eq!(cuda_memcpy(d_host.as_mut_ptr() as Ptr, dd as *const c_void, m * n * 4, D2H), 0);
             let mut run = || {
-                let st = matmul(lt, desc, &alpha as *const f32 as Ptr, dw as *const c_void, la, dx as *const c_void, lb, &beta as *const f32 as Ptr, dd as *const c_void, ld, dd, ld, std::ptr::null_mut(), ws, ws_size, std::ptr::null_mut());
+                let st = matmul(lt, desc, &alpha as *const f32 as Ptr, dw as *const c_void, la, dx as *const c_void, lb, &beta as *const f32 as Ptr, dd as *const c_void, ld, dd, ld, &algo as *const [u64; 8] as Ptr, ws, ws_size, std::ptr::null_mut());
                 assert_eq!(st, 0, "matmul 失败");
             };
             for _ in 0..5 {
                 run();
             }
             assert_eq!(cuda_sync(), 0);
+            {
+                let mut lt_host = vec![0f32; m * n];
+                assert_eq!(cuda_memcpy(lt_host.as_mut_ptr() as Ptr, dd as *const c_void, m * n * 4, D2H), 0);
+                let md = d_host.iter().zip(&lt_host).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+                let rel = md / d_host.iter().map(|v| v.abs()).fold(0.0f32, f32::max).max(1e-30);
+                eprintln!("[5] Lt 对 Sgemm 对拍：maxdiff={md:.3e}（相对 {rel:.3e}）");
+                assert!(md < 1e-2, "Lt 结果与 Sgemm 不一致");
+            }
             let t = Instant::now();
             let iters = 50;
             for _ in 0..iters {
