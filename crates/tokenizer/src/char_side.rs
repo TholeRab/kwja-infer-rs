@@ -1,15 +1,13 @@
-//! char 侧分词：逐 id 复刻 transformers 5.18 `BertJapaneseTokenizer`（慢实现）。
+//! char 侧分词：逐 id 复刻 transformers 5.18 BertJapaneseTokenizer（慢实现）。
 //!
-//! char-wwm 快照里没有 tokenizer.json，只有 vocab.txt；`AutoTokenizer.from_pretrained`
+//! char-wwm 快照里没有 tokenizer.json，只有 vocab.txt；AutoTokenizer.from_pretrained
 //! 实际返回慢分词器（tokenizer_config.json：tokenizer_class=BertJapaneseTokenizer、
 //! word_tokenizer_type=basic、subword_tokenizer_type=character、do_lower_case=False）。
-//! ★推理配置传 `do_word_tokenize: false`（`configs/datamodule/base/char.yaml:11`，上游
-//!   参考实现 同值）——BasicTokenizer **不参与**，控制字符/空白/标点预处理都不做。
-//! 管线（对照源码位置）：
-//! 1. added token 切分：`tokenization_python.py:625-683`（tokens_trie.split → 非 added 段进 _tokenize）；
-//! 2. `_tokenize`：`tokenization_bert_japanese.py:212-223`——do_word_tokenize=false 时
-//!    `tokens = [text]` 整段直通；
-//! 3. CharacterTokenizer：`tokenization_bert_japanese.py:587-611`（整段 NFKC，逐字符查 vocab，缺字 [UNK]）；
+//! 推理配置传 do_word_tokenize: false，BasicTokenizer 不参与，控制字符/空白/标点预处理都不做。
+//! 管线：
+//! 1. added token 切分：按 trie 最左最长匹配，非 added 段进 _tokenize；
+//! 2. do_word_tokenize=false 时整段直通，不做词级切分；
+//! 3. 整段 NFKC 归一化后逐字符查 vocab，缺字记 [UNK]；
 //! 4. 组装：[CLS] + ids + [SEP]，右侧补 [PAD] 到 max_seq_length。
 
 use std::collections::{HashMap, HashSet};
@@ -26,7 +24,7 @@ const SPECIAL_TOKENS: [&str; 6] = ["[UNK]", "[SEP]", "[PAD]", "[CLS]", "[MASK]",
 
 pub struct CharTokenizer {
     vocab: HashMap<String, u32>,
-    /// 新增（不在 base vocab）的 added token → id，从 len(vocab) 起编号。
+    /// 新增（不在 base vocab）的 added token 到 id 的映射，从 len(vocab) 起编号。
     added_ids: HashMap<String, u32>,
     /// trie 切分用：specials + 额外 added，按长度降序（最左最长匹配）。
     trie_tokens: Vec<String>,
@@ -149,15 +147,10 @@ impl CharTokenizer {
         count
     }
 
-    /// writer 的 special 过滤集（`char_module_writer.py:46-48`）：
+    /// writer 的 special 过滤集：
     /// bos/eos 对本 tokenizer 不存在（None 不入集），实际生效的是 pad/cls/sep/mask。
     /// mask token 取快照 special_tokens_map.json 的 [MASK]（vocab id 4）。
     /// 注意 [UNK] 不在过滤集里——UNK 位保留，照样出标签。
-    ///
-    /// ★原先把字面量写成了 `MASK]`（少一个左方括号），`vocab.get` 必然返回 None，
-    ///   mask 从来没进过过滤集：实际是 3 项 {0,1,2}，而 Python 是 {None,0,1,2,4}。
-    ///   输出之所以没差，是因为 id 4 在 char 编码输入里不可达（文本里不会出现
-    ///   `[MASK]` 字面量）——属于「输出相同但设计不对」，不是「对齐了」。
     pub fn writer_special_ids(&self) -> Vec<u32> {
         let mut ids = vec![self.pad_id, self.cls_id, self.sep_id];
         let mask_id = self
@@ -169,7 +162,7 @@ impl CharTokenizer {
         ids
     }
 
-    /// tokens_trie.split：从左到右扫，命中最长的 added token 就切出来（保序）。
+    /// trie 切分：从左到右扫，命中最长的 added token 就切出来（保序）。
     fn split_on_added(&self, text: &str) -> Vec<String> {
         let chars: Vec<char> = text.chars().collect();
         let mut segments: Vec<String> = Vec::new();
@@ -201,8 +194,8 @@ impl CharTokenizer {
         segments
     }
 
-    /// CharacterTokenizer.tokenize：整段 NFKC 后逐字符查 vocab，缺字 [UNK]
-    /// （do_word_tokenize=false 下吃的是整个非 added 段，即 `_tokenize` 的 `tokens = [text]`）。
+    /// 整段 NFKC 后逐字符查 vocab，缺字 [UNK]；
+    /// do_word_tokenize=false 时输入是整个非 added 段。
     fn character_tokenize(&self, text: &str) -> Vec<String> {
         let nfkc: String = text.nfkc().collect();
         nfkc.chars()

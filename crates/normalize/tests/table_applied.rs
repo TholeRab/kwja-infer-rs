@@ -1,4 +1,4 @@
-//! 阶段 2 闸（表）：TRANSLATION_TABLE 的 3 对替换与 68 个删除码点，逐条对 constants.py:195-197。
+//! TRANSLATION_TABLE 的 3 对替换与 68 个删除码点。
 
 use kwja_normalize::translation_table::{is_deleted, translate};
 

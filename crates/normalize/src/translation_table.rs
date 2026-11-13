@@ -1,9 +1,8 @@
 //! TRANSLATION_TABLE：3 对替换 + 68 个删除码点。
 //!
-//! 逐字对照 Python `代码/src/kwja/utils/constants.py:195-197`：
-//! `str.maketrans('"#▁', "”＃▂", "".join(chr(i) for i in [*range(32), *range(127, 160), 5760, *range(8232, 8234)]))`
+//! 删除集合为 ASCII 控制符（0..32）、DEL 与 C1（127..160）、OGHAM 空格（5760）、LS/PS（8232、8233）。
 
-/// 替换对：`"` → `”`、`#` → `＃`、`▁` → `▂`。
+/// 替换对：`"` 改作 `”`，`#` 改作 `＃`，`▁` 改作 `▂`。
 pub const REPLACEMENTS: [(char, char); 3] = [('"', '”'), ('#', '＃'), ('▁', '▂')];
 
 /// 该码点是否属于删除集合（控制字符 / DEL+C1 / OGHAM 空格 / LS / PS）。

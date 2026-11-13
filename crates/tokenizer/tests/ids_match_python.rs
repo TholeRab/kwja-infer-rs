@@ -1,13 +1,12 @@
-//! 阶段 2 闸（tokenizer）：char / word 两侧的 input_ids・attention_mask 与 Python 完全相同。
-//! fixtures 由 阶段一/导出Rust侧阶段2基准.py 用 venv transformers 生成
-//! （char: padding=max_length/max_length=512；word: is_split_into_words + special 7 + pad 到 256）。
+//! tokenizer 对齐测试：char / word 两侧的 input_ids、attention_mask 必须与 Python 逐 id 相同。
+//! fixtures 在本 crate tests/fixtures/ 下
+//! （char: padding=max_length、max_length=512；word: is_split_into_words + 7 个 special + pad 到 256）。
 
 use kwja_tokenizer::char_side::CharTokenizer;
 use kwja_tokenizer::word_side::WordTokenizer;
 use std::path::PathBuf;
 
 /// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
-/// ★ 起素材一律在本仓 assets/ 下，不再引用 参考实现仓。
 fn repo_path(rel: &str) -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -63,8 +62,8 @@ fn ids(case: &serde_json::Value, key: &str) -> Vec<i64> {
 fn char_ids_match_python() {
     let cases = load_cases("char_cases.json");
     assert!(!cases.is_empty());
-    // ★char 快照里没有 tokenizer.json（只有 vocab.txt；方案 §二 写的位置实测不存在），
-    // Python 侧拿到的是慢分词器 BertJapaneseTokenizer——Rust 侧按其源码逐 id 复刻。
+    // char 快照里没有 tokenizer.json，只有 vocab.txt；Python 侧拿到的是慢分词器
+    // BertJapaneseTokenizer，Rust 侧按其行为逐 id 复刻。
     let tok = CharTokenizer::load(
         vocab_txt("models--ku-nlp--deberta-v2-base-japanese-char-wwm"),
         &[" "],

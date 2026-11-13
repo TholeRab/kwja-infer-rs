@@ -1,12 +1,13 @@
 //! word 侧分词：deberta-v2-base-japanese 的 tokenizer.json（vocab 32000）。
 //!
-//! 与 Python 的对齐点（`datamodule/datasets/word_inference.py:79-143`）：
-//! 1. 主编码：词素 surf 列表按 `is_split_into_words=True` 编码，add_special_tokens
-//!    **默认开**（上游没传该参，transformers 默认 True → [CLS]…[SEP] 在内）；
-//! 2. special 编码：7 个 special token（配置里的 8 个滤掉 `" "`）单独编码，
-//!    `add_special_tokens=False`；
+//! 与 Python 的对齐点：
+//! 1. 主编码：词素 surf 列表按 is_split_into_words=True 编码，add_special_tokens
+//!    默认开（调用方没传该参，transformers 默认 True，[CLS] 与 [SEP] 在内）；
+//! 2. special 编码：7 个 special token（配置里的 8 个滤掉空格）单独编码，
+//!    add_special_tokens=False；
 //! 3. merge：主编码 + special + 补 pad 到 max_seq_length（=256）。
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use tokenizers::{AddedToken, Tokenizer};
@@ -52,9 +53,8 @@ impl WordTokenizer {
     }
 
     /// 一句的词素 surf 列表在当前 tokenizer 下的 token 数
-    /// （`flat_word_document._token_len`：add_special_tokens=False、
-    /// is_split_into_words=True——Vec<String> 输入即按词预切分，
-    /// 逐词独立编码，与 Python 的 `.tokens()` 长度同源）。
+    /// （add_special_tokens=False、is_split_into_words=True：Vec 输入按词预切分，
+    /// 逐词独立编码，与 Python 的 .tokens() 长度同源）。
     pub fn surf_token_len(&self, surfs: &[String]) -> Result<usize, String> {
         let encoding = self
             .tokenizer
@@ -99,9 +99,9 @@ impl WordTokenizer {
 
     /// 编码一个窗口并保留 word_ids（subword_map 要用）。
     ///
-    /// 与 Python 完全同构：主编码（add_special_tokens=True → [CLS]…[SEP]）
-    /// ＋ 7 个 special ＋ pad 到 max_seq_length。special/pad 位的 word_id 是
-    /// None；`num_tokens` 是主编码长度（special 的 token 级下标 = num_tokens + i）。
+    /// 与 Python 完全同构：主编码（add_special_tokens=True，含 [CLS] 与 [SEP]）
+    /// 加 7 个 special，再 pad 到 max_seq_length。special/pad 位的 word_id 是
+    /// None；num_tokens 是主编码长度（special 的 token 级下标 = num_tokens + i）。
     pub fn encode_window(&self, surfs: &[String]) -> Result<WindowEncoding, String> {
         let encoding = self
             .tokenizer
@@ -153,7 +153,7 @@ impl WordTokenizer {
     }
 }
 
-/// 一个窗口的完整编码（ids ＋ mask ＋ word_ids）。
+/// 一个窗口的完整编码（ids + mask + word_ids）。
 pub struct WindowEncoding {
     pub input_ids: Vec<i64>,
     pub attention_mask: Vec<i64>,
@@ -166,7 +166,7 @@ pub struct WindowEncoding {
 }
 
 impl WindowEncoding {
-    /// `subword_map[词素][token]`（含 special 行列；`word_inference.py:244-264`）。
+    /// subword_map[词素][token]（含 special 行列）。
     ///
     /// 第 m 行 = 该词素覆盖的 token 列；special 的词素级下标 = num_morphemes + i、
     /// token 级下标 = num_tokens + i，一一对应打上。
@@ -196,7 +196,7 @@ impl WindowEncoding {
         map
     }
 
-    /// FIRST 池化的取数下标：该词素行**第一个**为真的 token；
+    /// FIRST 池化的取数下标：该词素行第一个为真的 token；
     /// 全空行（special 之后的补位行）与 torch 的 `argmax(全零)` 一致取 0。
     pub fn subword_first_token(&self, morpheme: usize, num_morphemes: usize) -> usize {
         if morpheme >= num_morphemes && morpheme < num_morphemes + self.num_specials {
@@ -212,4 +212,3 @@ impl WindowEncoding {
     }
 }
 
-use std::collections::HashSet;

@@ -1,9 +1,9 @@
 //! kwja-infer 命令行入口。
-//! 只暴露三个参数：--model-dir / --device(auto|cpu|cuda) / --input；用户不调 batch（事实账 §七）。
+//! 只暴露三个参数：--model-dir / --device(auto|cpu|cuda) / --input。
 //!
-//! 设备口径（用户  裁定：**要么全用 CPU，要么全用 GPU，混跑只能是过渡**）：
-//! - `cuda`：CUDA EP；起不来直接报错，**绝不静默回落 CPU**；
-//! - `cpu`：只装 CPU EP（**纯 CPU 形态**；最终检验＝10 章闸，不跑整书）；
+//! 设备口径：要么全用 CPU，要么全用 GPU，不混跑：
+//! - `cuda`：CUDA EP；起不来直接报错，绝不静默回落 CPU；
+//! - `cpu`：只装 CPU EP（纯 CPU 形态）；
 //! - `auto`（默认）：先试 CUDA，起不来自动用纯 CPU，并在 stderr 说明实际用了哪个。
 
 use std::path::Path;
@@ -69,18 +69,18 @@ fn run() -> anyhow::Result<()> {
         if has_cuda { "GPU" } else { "CPU" }
     );
 
-    // ---- 两个阶段：char（RAW → Juman++ 文本）→ word（13 头 → KNP 文本）----
+    // ---- 两个阶段：char（RAW 到 Juman++ 文本）、word（13 头到 KNP 文本）----
     let char_stage = CharStage::new(char_vocab(&model_dir)?, 512).map_err(anyhow::Error::msg)?;
     let mut predictor = WordPredictor::new(&model_dir, 256, 2).map_err(anyhow::Error::msg)?;
-    // 后端与头前向：头前向切 GPU。默认 ORT 融合图（heads_fused.onnx + dep_type.onnx）；
-    // KWJA_BACKEND=cublas 切 cuBLAS 直调（models/cublas/ 权重，阶段一/导出cuBLAS权重.py）。
+    // 头前向默认走 ORT 融合图（heads_fused.onnx + dep_type.onnx）；
+    // KWJA_BACKEND=cublas 时改 cuBLAS 直调（读 models/cublas/ 权重）。
     // 权重缺失或走 CPU 时留 None，头前向回退 Rust CPU 路径，结果口径不变。
     if has_cuda {
         let use_cublas = std::env::var("KWJA_BACKEND").unwrap_or_default() == "cublas";
         if use_cublas {
             match kwja_heads::cublas_heads::CublasHeads::load(&models) {
                 Ok(Some(gpu)) => {
-                    eprintln!("头前向：cuBLAS 直调（E5，models/cublas 权重）");
+                    eprintln!("头前向：cuBLAS 直调（models/cublas 权重）");
                     predictor.set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Cublas(gpu)));
                 }
                 Ok(None) => eprintln!("头前向：未找到 models/cublas 权重，留在 CPU"),
@@ -100,10 +100,9 @@ fn run() -> anyhow::Result<()> {
 
     let raw = std::fs::read_to_string(&args.input)
         .with_context(|| format!("读取输入失败：{}", args.input.display()))?;
-    // ★按 EOD 切章再逐章归一化（flat_utils.chunk_by_document 同口径：strip 后
-    //   等于 "EOD" 的行分块）。Python 侧的写入口径是
-    //   `normalize_text(章文本) + "\nEOD\n"`——归一化落在章内，EOD 行不动，
-    //   所以这里也必须先切块、后归一化，不能整文件一起归一化。
+    // 按 EOD 切章再逐章归一化（strip 后等于 "EOD" 的行分块）。Python 侧的写入口径是
+    // `normalize_text(章文本) + "\nEOD\n"`——归一化落在章内，EOD 行不动，
+    // 所以这里也必须先切块、后归一化，不能整文件一起归一化。
     let texts: Vec<String> = split_by_eod(&raw).iter().map(|t| normalize_text(t)).collect();
 
     let started = std::time::Instant::now();
@@ -121,7 +120,7 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 素材目录：显式 --model-dir → 当前目录 assets/ → exe 上溯 assets/（打包分发）。
+/// 素材目录：优先显式 --model-dir，其次当前目录 assets/，再次 exe 上溯目录里的 assets/（打包分发）。
 fn resolve_model_dir(explicit: Option<PathBuf>) -> anyhow::Result<PathBuf> {
     if let Some(d) = explicit {
         return Ok(d);
@@ -158,8 +157,7 @@ fn char_vocab(model_dir: &Path) -> anyhow::Result<PathBuf> {
     Ok(hits.remove(0).join("vocab.txt"))
 }
 
-/// 按 EOD 行切块（`flat_utils.chunk_by_document` 同口径：
-/// `line.strip() == "EOD"` 分块，块尾 rstrip；文件尾不足一块的也算一块）。
+/// 按 EOD 行切块：行 strip 后等于 EOD 即分块，块尾 rstrip；文件尾不足一块的也算一块。
 fn split_by_eod(text: &str) -> Vec<String> {
     let mut texts: Vec<String> = Vec::new();
     let mut buff = String::new();

@@ -1,5 +1,5 @@
-//! 阶段 2 闸（normalize）：与 Python `normalize_text`（NFKC + TRANSLATION_TABLE）逐字符一致。
-//! fixtures 由 阶段一/导出Rust侧阶段2基准.py 用 venv + 本仓 constants.py 生成。
+//! normalize_text（NFKC 加 TRANSLATION_TABLE）与 Python 参考实现逐字符一致。
+//! fixtures：tests/fixtures/normalize_cases.json。
 
 use kwja_normalize::nfkc::normalize_text;
 
