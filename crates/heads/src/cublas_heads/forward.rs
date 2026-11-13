@@ -149,13 +149,13 @@ impl Inner {
 
             // 四个小 tagger：pooled 经 Linear(768,768)+GELU+Linear(768,C)
             let tag1 = self.buf("tag1", m * 768 * 4)?;
-            let mut run_tagger = |g: &mut Self,
-                                  w1n: &str,
-                                  b1n: &str,
-                                  w2n: &str,
-                                  b2n: &str,
-                                  c: usize,
-                                  dst: Ptr|
+            let run_tagger = |g: &mut Self,
+                              w1n: &str,
+                              b1n: &str,
+                              w2n: &str,
+                              b2n: &str,
+                              c: usize,
+                              dst: Ptr|
              -> Result<(), String> {
                 let (w1, b1) = (g.w(w1n)?, g.w(b1n)?);
                 g.gemm_nn(pooled, w1.ptr, tag1, m, 768, 768)?;
@@ -203,16 +203,16 @@ impl Inner {
             )?;
 
             // LoRA 双头（wf 5 类 / bpf 64 类）：base 线性加 delta，广播加后过 GELU，再过 classifier 与 sigmoid
-            let mut run_lora = |g: &mut Self,
-                                w1n: &str,
-                                b1n: &str,
-                                delta: &str,
-                                clf: &str,
-                                b2n: &str,
-                                l: usize,
-                                slot_base: &'static str,
-                                slot_g: &'static str,
-                                dst: Ptr|
+            let run_lora = |g: &mut Self,
+                            w1n: &str,
+                            b1n: &str,
+                            delta: &str,
+                            clf: &str,
+                            b2n: &str,
+                            l: usize,
+                            slot_base: &'static str,
+                            slot_g: &'static str,
+                            dst: Ptr|
              -> Result<(), String> {
                 let base = g.buf(slot_base, m * 768 * 4)?;
                 let (w1, b1) = (g.w(w1n)?, g.w(b1n)?);
@@ -262,7 +262,7 @@ impl Inner {
             self.bias_add(outs_f.add(lay.ne) as Ptr, nb2.ptr, m * 17, 17)?;
 
             // dep/discourse 投影：单层线性，无激活
-            let mut run_proj = |g: &mut Self, wn: &str, bn: &str, dst: Ptr| -> Result<(), String> {
+            let run_proj = |g: &mut Self, wn: &str, bn: &str, dst: Ptr| -> Result<(), String> {
                 let (w, b) = (g.w(wn)?, g.w(bn)?);
                 g.gemm_nn(pooled, w.ptr, dst, m, 768, 768)?;
                 g.bias_add(dst, b.ptr, m * 768, 768)?;
@@ -274,13 +274,13 @@ impl Inner {
             run_proj(self, "dis_wt", "dis_bt", outs_f.add(lay.dis_ht) as Ptr)?;
 
             // cohesion：单层线性 + per-rel LoRA（广播相加），输出 (M,9,768) 平坦
-            let mut run_coh = |g: &mut Self,
-                               wn: &str,
-                               bn: &str,
-                               dn: &str,
-                               slot_base: &'static str,
-                               slot_delta: &'static str,
-                               dst: Ptr|
+            let run_coh = |g: &mut Self,
+                           wn: &str,
+                           bn: &str,
+                           dn: &str,
+                           slot_base: &'static str,
+                           slot_delta: &'static str,
+                           dst: Ptr|
              -> Result<(), String> {
                 let base = g.buf(slot_base, m * 768 * 4)?;
                 let (w, b) = (g.w(wn)?, g.w(bn)?);
@@ -326,7 +326,9 @@ impl Inner {
                     t * 4,
                 );
                 bytes
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as usize)
                     .collect()
             };

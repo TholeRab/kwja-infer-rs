@@ -126,10 +126,10 @@ impl DebertaV2Encoder {
                 rel_embeddings.as_ref(),
             )?;
 
-            if i == 0 {
-                if let Some(conv) = &self.conv {
-                    output_states = conv.forward(hidden_states, &output_states, &input_mask)?;
-                }
+            if i == 0
+                && let Some(conv) = &self.conv
+            {
+                output_states = conv.forward(hidden_states, &output_states, &input_mask)?;
             }
 
             if query_states.is_some() {

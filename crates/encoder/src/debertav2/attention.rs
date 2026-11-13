@@ -176,21 +176,21 @@ impl DebertaV2DisentangledSelfAttention {
             query_layer.matmul(&div)?
         };
 
-        if self.relative_attention {
-            if let Some(rel_embeddings) = rel_embeddings {
-                let rel_embeddings = self
-                    .pos_dropout
-                    .as_ref()
-                    .context("relative_attention requires pos_dropout")?
-                    .forward(rel_embeddings)?;
-                rel_att = Some(self.disentangled_attention_bias(
-                    query_layer,
-                    key_layer,
-                    relative_pos,
-                    rel_embeddings,
-                    scale_factor,
-                )?);
-            }
+        if self.relative_attention
+            && let Some(rel_embeddings) = rel_embeddings
+        {
+            let rel_embeddings = self
+                .pos_dropout
+                .as_ref()
+                .context("relative_attention requires pos_dropout")?
+                .forward(rel_embeddings)?;
+            rel_att = Some(self.disentangled_attention_bias(
+                query_layer,
+                key_layer,
+                relative_pos,
+                rel_embeddings,
+                scale_factor,
+            )?);
         }
 
         if let Some(rel_att) = rel_att {

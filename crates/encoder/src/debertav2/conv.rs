@@ -69,6 +69,6 @@ impl ConvLayer {
         let layer_norm_input = residual_states.add(&out)?;
         let output = self._layer_norm.forward(&layer_norm_input)?;
         let keep = input_mask.unsqueeze(2)?.to_dtype(output.dtype())?; // (b, seq, 1)
-        Ok(output.broadcast_mul(&keep)?)
+        output.broadcast_mul(&keep)
     }
 }

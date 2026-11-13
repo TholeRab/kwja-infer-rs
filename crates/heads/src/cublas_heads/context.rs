@@ -127,7 +127,7 @@ pub(super) fn init() -> Result<Handles, String> {
 
 pub(super) fn compile(h: &Handles) -> Result<[Ptr; 7], String> {
     let nvrtc = h.nvrtc;
-    let drv = h.drv;
+    let _drv = h.drv;
     let major = h.major;
     let minor = h.minor;
     let cu_module_load = h.cu_module_load;

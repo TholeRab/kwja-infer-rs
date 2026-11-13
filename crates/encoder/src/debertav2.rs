@@ -29,4 +29,5 @@ pub use tasks::{
     TextClassificationItem,
 };
 
+#[allow(unused_imports)]
 pub(crate) use relpos::{build_relative_position, make_log_bucket_position};

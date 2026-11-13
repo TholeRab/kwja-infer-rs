@@ -152,6 +152,7 @@ impl GpuHeads {
     /// 各窗行数不一时按批内最大值补零行：头的全部算子逐行独立，
     /// 补零行只产生无人读的垃圾输出，真实行的值不因同批伙伴而变。
     /// 每窗取回时按自身行数切掉补零区。
+    #[allow(clippy::type_complexity)]
     pub fn forward_fused_batched(
         &self,
         windows: &[(&[Vec<f32>], &[Vec<f32>])],

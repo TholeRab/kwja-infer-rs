@@ -192,8 +192,14 @@ pub fn add_bp_features(
             chunks.phrases[pi].bps.last_mut().unwrap().feats.set(k, v);
             // 在 [clause_start, pi] 这段文节里找 節-主辞 概率最高的基本句
             let mut best: Option<(usize, usize, f32)> = None; // (pi, bi, prob)
-            for pj in clause_start..=pi {
-                for (bi, bp) in chunks.phrases[pj].bps.iter().enumerate() {
+            for (pj, phrase) in chunks
+                .phrases
+                .iter()
+                .enumerate()
+                .take(pi + 1)
+                .skip(clause_start)
+            {
+                for (bi, bp) in phrase.bps.iter().enumerate() {
                     let prob = bp_features_prob[bp.head_gi][i_chu];
                     if best.is_none_or(|(_, _, bp_prob)| prob > bp_prob) {
                         best = Some((pj, bi, prob));

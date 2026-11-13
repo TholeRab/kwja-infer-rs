@@ -9,6 +9,7 @@
 //! - wf/bpf：base 线性加 LoRA delta，广播相加后过 GELU，再过 classifier 与 sigmoid；
 //! - dep/discourse：单层线性；cohesion：单层线性 + per-rel LoRA 广播相加；
 //! - dep_type：输入 (P,1536)，经 Linear(1536,1536)+GELU+Linear(1536,4)，逐行 argmax。
+//!
 //! 与 ORT 路径的逐元素差为 fp32 GEMM 噪声量级，argmax/阈值零翻转
 //! （examples/check_cublas.rs 逐头对照）。
 //! 运行期 LoadLibraryW 载 torch/lib 的 cublas/cudart 与 nvrtc、驱动 nvcuda，
@@ -48,6 +49,7 @@ struct Inner {
     memcpy: FnMemcpy,
     memset: FnMemset,
     host_alloc: FnHostAlloc,
+    #[allow(dead_code)]
     host_free: FnHostFree,
     sync: FnSync,
     launch: FnCuLaunch,

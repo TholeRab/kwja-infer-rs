@@ -114,7 +114,8 @@ pub fn add_cohesion(
     //   并集取最宽的非共指掩码：前指（cand < anaph）、同句后指（cand > anaph
     //   且同句）、special 列；共指任务更严的那部分列照常在第二遍掩掉。
     //   顺序不变：par_iter().map().collect() 保序，列仍按 gather 序排列。
-    let all_rows: Vec<(usize, (Vec<usize>, Vec<Vec<f32>>))> = (0..b)
+    type CohRow = (usize, (Vec<usize>, Vec<Vec<f32>>));
+    let all_rows: Vec<CohRow> = (0..b)
         .into_par_iter()
         .filter(|&bi| wanted[bi])
         .map(|bi| {

@@ -27,7 +27,7 @@ pub(super) fn extract_reading_argmax(
             data.len()
         ));
     }
-    Ok(data.chunks_exact(c).map(|row| argmax(row)).collect())
+    Ok(data.chunks_exact(c).map(argmax).collect())
 }
 
 /// [n,c] 或 [1,n,c] 的 f32 输出展开成行向量集。
@@ -141,7 +141,7 @@ pub(super) fn extract_reading_argmax_batched(
             let base = k * t * c;
             data[base..base + counts[k] * c]
                 .chunks_exact(c)
-                .map(|row| argmax(row))
+                .map(argmax)
                 .collect()
         })
         .collect())
