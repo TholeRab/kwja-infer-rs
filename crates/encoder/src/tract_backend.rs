@@ -35,6 +35,7 @@ type Runnable = TypedRunnableModel<TypedModel>;
 pub struct TractBackend {
     char_path: std::path::PathBuf,
     word_path: std::path::PathBuf,
+    threads: usize,
     char_cache: Mutex<HashMap<usize, Arc<Runnable>>>,
     word_cache: Mutex<HashMap<(usize, usize), Arc<Runnable>>>,
 }
@@ -60,10 +61,11 @@ impl TractBackend {
         let char_path = char_model.as_ref().to_path_buf();
         let word_path = word_model.as_ref().to_path_buf();
         let mut word_cache = HashMap::new();
-        word_cache.insert((1, 256), Arc::new(build_word(&word_path, 1, 256)?));
+        word_cache.insert((1, 256), Arc::new(build_word(&word_path, 1, 256, threads)?));
         Ok(Self {
             char_path,
             word_path,
+            threads,
             char_cache: Mutex::new(HashMap::new()),
             word_cache: Mutex::new(word_cache),
         })
@@ -76,7 +78,7 @@ impl TractBackend {
         if let Some(runnable) = cache.get(&seq) {
             return Ok(runnable.clone());
         }
-        let runnable = Arc::new(build_char(&self.char_path, seq)?);
+        let runnable = Arc::new(build_char(&self.char_path, seq, self.threads)?);
         cache.insert(seq, runnable.clone());
         Ok(runnable)
     }
@@ -86,7 +88,7 @@ impl TractBackend {
         if let Some(runnable) = cache.get(&(batch, seq)) {
             return Ok(runnable.clone());
         }
-        let runnable = Arc::new(build_word(&self.word_path, batch, seq)?);
+        let runnable = Arc::new(build_word(&self.word_path, batch, seq, self.threads)?);
         cache.insert((batch, seq), runnable.clone());
         Ok(runnable)
     }
@@ -96,7 +98,7 @@ fn i64_fact(shape: &[usize]) -> InferenceFact {
     InferenceFact::dt_shape(DatumType::I64, shape)
 }
 
-fn build_char(path: &Path, seq: usize) -> Result<Runnable, EncoderError> {
+fn build_char(path: &Path, seq: usize, threads: usize) -> Result<Runnable, EncoderError> {
     let mut model = tract_onnx::onnx()
         .model_for_path(path)
         .map_err(|e| EncoderError::Session(format!("tract 加载 {} 失败：{:?}", path.display(), e)))?;
@@ -106,10 +108,10 @@ fn build_char(path: &Path, seq: usize) -> Result<Runnable, EncoderError> {
     model
         .set_input_fact(1, i64_fact(&[1, seq]))
         .map_err(|e| EncoderError::Session(format!("char 掩码事实设置失败：{e}")))?;
-    finish(model)
+    finish(model, threads)
 }
 
-fn build_word(path: &Path, batch: usize, seq: usize) -> Result<Runnable, EncoderError> {
+fn build_word(path: &Path, batch: usize, seq: usize, threads: usize) -> Result<Runnable, EncoderError> {
     let mut model = tract_onnx::onnx()
         .model_for_path(path)
         .map_err(|e| EncoderError::Session(format!("tract 加载 {} 失败：{:?}", path.display(), e)))?;
@@ -122,13 +124,19 @@ fn build_word(path: &Path, batch: usize, seq: usize) -> Result<Runnable, Encoder
     model
         .set_input_fact(2, i64_fact(&[batch, 7]))
         .map_err(|e| EncoderError::Session(format!("word specials 事实设置失败：{e}")))?;
-    finish(model)
+    finish(model, threads)
 }
 
-fn finish(model: InferenceModel) -> Result<Runnable, EncoderError> {
+fn finish(model: InferenceModel, threads: usize) -> Result<Runnable, EncoderError> {
+    // ★线程池必须挂在**计划**上（plan.rs 的 eval 只在 plan.executor 存在时
+    //   进入 multithread_tract_scope，光设全局默认不生效——实测踩过）。
+    let options = PlanOptions {
+        skip_order_opt_ram: false,
+        executor: Some(tract_linalg::multithread::Executor::multithread(threads)),
+    };
     model
         .into_optimized()
-        .and_then(|m| m.into_runnable())
+        .and_then(|m| m.into_runnable_with_options(&options))
         .map_err(|e| EncoderError::Session(format!("tract 优化失败：{e:?}")))
 }
 
