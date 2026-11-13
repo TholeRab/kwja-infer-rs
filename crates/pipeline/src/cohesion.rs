@@ -61,7 +61,7 @@ pub fn add_cohesion(
     cohesion_tasks: &[String],
     task2name: &dyn Fn(&str) -> &str,
     task2rels: &dyn Fn(&str) -> Vec<String>,
-    same_sentence: &dyn Fn(usize, usize) -> bool,
+    same_sentence: &(dyn Fn(usize, usize) -> bool + Sync),
     special_indices: &[usize],
     special_tokens: &[String],
     exophora_types: &[String],
@@ -99,22 +99,42 @@ pub fn add_cohesion(
     }
     let _ = num_rels;
 
-    // ★阶段一：并行算全部行。
+    // ★阶段一：并行算全部行，每行只算「各任务掩码的并集」列。
     //   行与行之间只读共享（source/target 投影结果），没有数据依赖，
     //   是这里唯一足够大的并行粒度（每行 106 列 × 9 rel × 768 维）。
-    //   先前只并行「头与头之间」，cohesion 这 57% 的时间始终单线程，
-    //   所以 CPU 占用只有四成。
     //
-    //   ★顺序不变：用 par_iter().map().collect() 保序，结果下标与串行逐一对应。
-    let all_rows: Vec<Vec<Vec<f32>>> = (0..b)
+    //   ★剪枝（剪枝方向）：被所有任务掩掉的列永远赢不了 argmax
+    //   （MASKED=-1024 低于任何有限 logits，而 6 个 special 列对全部行放开
+    //   ⇒ 每行至少 6 列可算），跳过它们与「算完再掩成 MASKED」逐字节等价。
+    //   并集取最宽的非共指掩码：前指（cand < anaph）∪ 同句后指（cand > anaph
+    //   且同句）∪ special 列；共指任务更严的那部分列照常在阶段二掩掉。
+    //
+    //   ★顺序不变：par_iter().map().collect() 保序，列仍按 gather 序排列。
+    let all_rows: Vec<(Vec<usize>, Vec<Vec<f32>>)> = (0..b)
         .into_par_iter()
-        .map(|bi| row_logits(doc.bp_head_gi[bi], &gather))
+        .map(|bi| {
+            let anaph = doc.bp_head_gi[bi];
+            let mut ks: Vec<usize> = Vec::with_capacity(gather.len());
+            let mut cols: Vec<usize> = Vec::with_capacity(gather.len());
+            for (k, &cand) in gather.iter().enumerate() {
+                let wanted = if k >= b {
+                    true // gather 后段正是 special_indices：对全部行无条件放开
+                } else {
+                    cand < anaph || (cand > anaph && same_sentence(cand, anaph))
+                };
+                if wanted {
+                    ks.push(k);
+                    cols.push(cand);
+                }
+            }
+            (ks, row_logits(anaph, &cols))
+        })
         .collect();
 
     // ★阶段二：串行解码（掩码 + argmax）。
     //   argmax 平局取首个，顺序是语义的一部分，这里必须串行。
     let mut out = Vec::new();
-    for (bi, rows) in all_rows.into_iter().enumerate() {
+    for (bi, (ks, rows)) in all_rows.into_iter().enumerate() {
         let head_gi = doc.bp_head_gi[bi];
         let feats = &doc.bp_feats[bi];
         for (task, rel, channel) in &rel_channels {
@@ -128,7 +148,8 @@ pub fn add_cohesion(
             // b.. 之后是 special 词素（[ROOT] 在最前）。
             let mut best_k = 0usize;
             let mut best_v = f32::NEG_INFINITY;
-            for (k, logits) in rows.iter().enumerate() {
+            for (idx, logits) in rows.iter().enumerate() {
+                let k = ks[idx];
                 let allowed = if k >= b {
                     // special 列：掩码只放开 only_cohesion 的 6 个（[ROOT] 被压住）
                     special_indices.iter().any(|s| s == &gather[k])
