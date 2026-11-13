@@ -284,17 +284,25 @@ impl WordPredictor {
         const T_WF: usize = 5;
         const T_NE: usize = 6;
         const T_BF: usize = 7;
+        // ★计算量方向：这些头下游只读词素行——
+        //   pos/subpos/conjtype/conjform 下游显式取 [..n_morphemes]，
+        //   wf 的 chunk_plain、bf 的 add_bp_features 也只按词素/主辞下标取行，
+        //   reading 只被 rmap 里真词素的 token 位读（填充与 special 位从不读）。
+        //   forward_rows 是逐行 matvec、行与行独立 ⇒ 只算这些行，结果逐字节相同。
+        //   NE 例外：它走全序列 Viterbi（掩码路径跨整窗），保持原样。
+        let token_rows = &hidden_rows[..encoding.num_tokens];
+        let morph_rows = &pooled[..n_morphemes];
         let outs: Vec<Vec<Vec<f32>>> = (0..8usize)
             .into_par_iter()
             .map(|t| match t {
-                T_READING => h.reading.logits(&hidden_rows),
-                T_POS => h.pos.logits(&pooled),
-                T_SUBPOS => h.subpos.logits(&pooled),
-                T_CONJTYPE => h.conjtype.logits(&pooled),
-                T_CONJFORM => h.conjform.logits(&pooled),
-                T_WF => h.word_feature.probabilities(&pooled),
+                T_READING => h.reading.logits(token_rows),
+                T_POS => h.pos.logits(morph_rows),
+                T_SUBPOS => h.subpos.logits(morph_rows),
+                T_CONJTYPE => h.conjtype.logits(morph_rows),
+                T_CONJFORM => h.conjform.logits(morph_rows),
+                T_WF => h.word_feature.probabilities(morph_rows),
                 T_NE => h.ne.logits(&pooled),
-                T_BF => h.base_phrase_feature.probabilities(&pooled),
+                T_BF => h.base_phrase_feature.probabilities(morph_rows),
                 _ => unreachable!(),
             })
             .collect();
