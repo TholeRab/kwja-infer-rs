@@ -757,6 +757,7 @@ name = "kwja-gates"
 version = "0.1.0"
 dependencies = [
  "kwja-encoder",
+ "kwja-heads",
  "kwja-pipeline",
 ]
 
