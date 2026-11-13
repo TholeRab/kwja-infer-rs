@@ -22,7 +22,7 @@ use ort::environment::Environment;
 use ort::session::Session;
 use ort::value::TensorRef;
 
-use kwja_encoder::ort_backend::{global_environment, Device};
+use kwja_encoder::ort_backend::{Device, global_environment};
 
 use crate::sequence_labeling::argmax;
 
@@ -84,7 +84,10 @@ impl GpuHeads {
     ) -> Result<FusedHeadsOutput, String> {
         let hidden = rows_to_array3(token_rows)?;
         let pooled = rows_to_array3(pooled_rows)?;
-        let mut session = self.fused.lock().map_err(|_| "fused 会话锁中毒".to_string())?;
+        let mut session = self
+            .fused
+            .lock()
+            .map_err(|_| "fused 会话锁中毒".to_string())?;
         let outputs = session
             .run(ort::inputs![
                 "hidden" => TensorRef::from_array_view(&hidden)
@@ -131,7 +134,10 @@ impl GpuHeads {
         }
         let pairs_array = ndarray::Array2::from_shape_vec((rows, PAIR_DIM), flat)
             .map_err(|e| format!("依存对整形失败：{e}"))?;
-        let mut session = self.dep_type.lock().map_err(|_| "dep_type 会话锁中毒".to_string())?;
+        let mut session = self
+            .dep_type
+            .lock()
+            .map_err(|_| "dep_type 会话锁中毒".to_string())?;
         let outputs = session
             .run(ort::inputs![
                 "pairs" => TensorRef::from_array_view(&pairs_array)
@@ -184,7 +190,10 @@ impl GpuHeads {
             .map_err(|e| format!("批量 pooled 整形失败：{e}"))?;
         let t_counts: Vec<usize> = windows.iter().map(|w| w.0.len()).collect();
         let m_counts: Vec<usize> = windows.iter().map(|w| w.1.len()).collect();
-        let mut session = self.fused.lock().map_err(|_| "fused 会话锁中毒".to_string())?;
+        let mut session = self
+            .fused
+            .lock()
+            .map_err(|_| "fused 会话锁中毒".to_string())?;
         let outputs = session
             .run(ort::inputs![
                 "hidden" => TensorRef::from_array_view(&hidden)
@@ -248,4 +257,3 @@ fn rows_to_array3(rows: &[Vec<f32>]) -> Result<Array3<f32>, String> {
     }
     Array3::from_shape_vec((1, n, hid), flat).map_err(|e| format!("行集整形失败：{e}"))
 }
-

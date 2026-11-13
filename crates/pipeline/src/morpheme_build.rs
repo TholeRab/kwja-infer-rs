@@ -3,8 +3,8 @@
 //! features 是「插入序 + 同名键后写覆盖」的小字典（参考实现的 FeatureDict 语义），
 //! 用 `OrderedFeats` 表达。同形词（homograph）按 ops 笛卡尔积展开成 ALT 标签。
 
-use crate::jumandic::JumanDic;
 use crate::jinf::Jinf;
+use crate::jumandic::JumanDic;
 use crate::word_tables::{AmbigSurfSpec, WordTables};
 
 /// 素性值：布尔真或冒号后的字符串。
@@ -166,12 +166,20 @@ fn lookup_semantics(
         Some(canon) => jumandic
             .lookup_by_canon(canon)
             .into_iter()
-            .filter(|e| e.reading == reading && e.lemma == norm && e.pos == pos && e.subpos == subpos && e.conjtype == conjtype)
+            .filter(|e| {
+                e.reading == reading
+                    && e.lemma == norm
+                    && e.pos == pos
+                    && e.subpos == subpos
+                    && e.conjtype == conjtype
+            })
             .collect(),
         None => jumandic
             .lookup_by_norm(norm)
             .into_iter()
-            .filter(|e| e.reading == reading && e.pos == pos && e.subpos == subpos && e.conjtype == conjtype)
+            .filter(|e| {
+                e.reading == reading && e.pos == pos && e.subpos == subpos && e.conjtype == conjtype
+            })
             .collect(),
     };
     if let Some(entry) = matched.first() {
@@ -179,10 +187,7 @@ fn lookup_semantics(
         if matched.len() > 1 {
             homograph_ops.push(HomographOp {
                 kind: HomographKind::Semantics,
-                values: matched[1..]
-                    .iter()
-                    .map(|e| quote(&e.semantics))
-                    .collect(),
+                values: matched[1..].iter().map(|e| quote(&e.semantics)).collect(),
             });
         }
         semantics
@@ -311,7 +316,15 @@ pub fn build_morphemes(
         let conjform_id = tables.conjtype_tag_conjform_tag2conjform_id[conjtype][conjform];
 
         let homographs = expand_homographs(
-            surf, reading, &homograph_ops, &lemma, &sem, pos_id, subpos_id, conjtype_id, conjform_id,
+            surf,
+            reading,
+            &homograph_ops,
+            &lemma,
+            &sem,
+            pos_id,
+            subpos_id,
+            conjtype_id,
+            conjform_id,
         );
 
         out.push(FlatMorpheme {

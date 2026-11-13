@@ -43,7 +43,11 @@ impl WordTokenizer {
         let special_encoding = tokenizer
             .encode(special_tokens.to_vec(), false)
             .map_err(|e| e.to_string())?;
-        let special_ids: Vec<i64> = special_encoding.get_ids().iter().map(|&i| i as i64).collect();
+        let special_ids: Vec<i64> = special_encoding
+            .get_ids()
+            .iter()
+            .map(|&i| i as i64)
+            .collect();
         Ok(Self {
             tokenizer,
             pad_id,
@@ -170,7 +174,11 @@ impl WindowEncoding {
     ///
     /// 第 m 行 = 该词素覆盖的 token 列；special 的词素级下标 = num_morphemes + i、
     /// token 级下标 = num_tokens + i，一一对应打上。
-    pub fn subword_map(&self, num_morphemes: usize, include_special_tokens: bool) -> Vec<Vec<bool>> {
+    pub fn subword_map(
+        &self,
+        num_morphemes: usize,
+        include_special_tokens: bool,
+    ) -> Vec<Vec<bool>> {
         let s = self.max_seq_length;
         let mut map = vec![vec![false; s]; s];
         let special_token_level: HashSet<usize> =
@@ -211,4 +219,3 @@ impl WindowEncoding {
         0
     }
 }
-

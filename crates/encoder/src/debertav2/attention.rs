@@ -1,9 +1,9 @@
+use super::build_relative_position;
 use super::config::Config;
 use super::feed_forward::DebertaV2SelfOutput;
 use super::layers::StableDropout;
-use super::build_relative_position;
 
-use candle::{bail, Context, DType, Device, Module, Result, Tensor, D};
+use candle::{Context, D, DType, Device, Module, Result, Tensor, bail};
 use candle_nn::VarBuilder;
 
 struct XSoftmax {}

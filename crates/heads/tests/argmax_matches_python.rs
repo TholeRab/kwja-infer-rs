@@ -4,11 +4,11 @@
 //! （掩码 argmax、CRF Viterbi、topk、softmax）现场算出。
 
 use kwja_heads::lora_multi_labeling::{
-    closes_base_phrase, closes_phrase, multi_label_flags, WORD_FEATURE_BP_END, WORD_FEATURE_PH_END,
+    WORD_FEATURE_BP_END, WORD_FEATURE_PH_END, closes_base_phrase, closes_phrase, multi_label_flags,
 };
 use kwja_heads::lora_relation_wise::{discourse_decode, topk_dim2};
 use kwja_heads::sequence_labeling::{
-    argmax, get_morpheme_attribute_predictions, viterbi_decode, CrfParameters,
+    CrfParameters, argmax, get_morpheme_attribute_predictions, viterbi_decode,
 };
 
 fn load(file: &str) -> Vec<serde_json::Value> {
@@ -33,7 +33,13 @@ fn f32_rows(value: &serde_json::Value) -> Vec<Vec<f32>> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|r| r.as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect())
+        .map(|r| {
+            r.as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_f64().unwrap() as f32)
+                .collect()
+        })
         .collect()
 }
 
@@ -69,17 +75,18 @@ fn usize_rows(value: &serde_json::Value) -> Vec<Vec<usize>> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|r| r.as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect())
+        .map(|r| {
+            r.as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_u64().unwrap() as usize)
+                .collect()
+        })
         .collect()
 }
 
 fn usize_cube(value: &serde_json::Value) -> Vec<Vec<Vec<usize>>> {
-    value
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(usize_rows)
-        .collect()
+    value.as_array().unwrap().iter().map(usize_rows).collect()
 }
 
 #[test]
@@ -95,9 +102,21 @@ fn morpheme_attribute_predictions_match_python() {
         );
         let expected = &case["expected"];
         assert_eq!(got.pos, usize_vec(&expected["pos"]), "{name}: pos 不一致");
-        assert_eq!(got.subpos, usize_vec(&expected["subpos"]), "{name}: subpos 不一致");
-        assert_eq!(got.conjtype, usize_vec(&expected["conjtype"]), "{name}: conjtype 不一致");
-        assert_eq!(got.conjform, usize_vec(&expected["conjform"]), "{name}: conjform 不一致");
+        assert_eq!(
+            got.subpos,
+            usize_vec(&expected["subpos"]),
+            "{name}: subpos 不一致"
+        );
+        assert_eq!(
+            got.conjtype,
+            usize_vec(&expected["conjtype"]),
+            "{name}: conjtype 不一致"
+        );
+        assert_eq!(
+            got.conjform,
+            usize_vec(&expected["conjform"]),
+            "{name}: conjform 不一致"
+        );
     }
 }
 
@@ -125,7 +144,11 @@ fn ne_viterbi_matches_python() {
             o_index: case["o_index"].as_u64().unwrap() as usize,
         };
         let got = viterbi_decode(&emissions, &mask, &params);
-        assert_eq!(got, usize_rows(&case["expected"]), "{name}: viterbi 路径不一致");
+        assert_eq!(
+            got,
+            usize_rows(&case["expected"]),
+            "{name}: viterbi 路径不一致"
+        );
     }
 }
 
@@ -133,7 +156,10 @@ fn ne_viterbi_matches_python() {
 fn dependency_topk_matches_python() {
     for case in load("dependency_topk_cases.json") {
         let name = case["name"].as_str().unwrap();
-        let got = topk_dim2(&f32_cube(&case["logits"]), case["k"].as_u64().unwrap() as usize);
+        let got = topk_dim2(
+            &f32_cube(&case["logits"]),
+            case["k"].as_u64().unwrap() as usize,
+        );
         assert_eq!(got, usize_cube(&case["expected"]), "{name}: topk 不一致");
     }
 }
@@ -147,7 +173,11 @@ fn discourse_decode_matches_python() {
             case["threshold"].as_f64().unwrap() as f32,
             case["none_index"].as_u64().unwrap() as usize,
         );
-        assert_eq!(got, usize_cube(&case["expected"]), "{name}: discourse 不一致");
+        assert_eq!(
+            got,
+            usize_cube(&case["expected"]),
+            "{name}: discourse 不一致"
+        );
     }
 }
 
@@ -176,7 +206,11 @@ fn multi_label_thresholds_match_python() {
                 .iter()
                 .map(|v| v.as_bool().unwrap())
                 .collect();
-            assert_eq!(multi_label_flags(row, threshold), flags, "{name}: flags 不一致");
+            assert_eq!(
+                multi_label_flags(row, threshold),
+                flags,
+                "{name}: flags 不一致"
+            );
         }
         if let Some(expected_bp) = case.get("expected_bp_close") {
             for (row, expected) in probs.iter().zip(expected_bp.as_array().unwrap().iter()) {

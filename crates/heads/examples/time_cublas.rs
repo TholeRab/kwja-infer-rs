@@ -34,6 +34,11 @@ fn main() -> Result<(), String> {
         let _ = cu.forward_fused(&hidden, &pooled)?;
     }
     let t4 = Instant::now();
-    println!("稳态 {} 窗: {:.3}s（{:3} ms/窗）", n, (t4 - t3).as_secs_f32(), (t4 - t3).as_secs_f32() * 1000.0 / n as f32);
+    println!(
+        "稳态 {} 窗: {:.3}s（{:3} ms/窗）",
+        n,
+        (t4 - t3).as_secs_f32(),
+        (t4 - t3).as_secs_f32() * 1000.0 / n as f32
+    );
     Ok(())
 }

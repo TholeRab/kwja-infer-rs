@@ -56,7 +56,11 @@ impl WordTables {
 
     /// 数据集里的 special_tokens：滤掉 " "。
     pub fn dataset_special_tokens(&self) -> Vec<&str> {
-        self.special_tokens.iter().filter(|s| s.as_str() != " ").map(|s| s.as_str()).collect()
+        self.special_tokens
+            .iter()
+            .filter(|s| s.as_str() != " ")
+            .map(|s| s.as_str())
+            .collect()
     }
 
     /// cohesion 任务对应的判据类名。

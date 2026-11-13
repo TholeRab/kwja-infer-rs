@@ -72,7 +72,10 @@ impl Cdb {
         if val_start + vlen > d.len() {
             return None;
         }
-        Some((d[key_start..val_start].to_vec(), d[val_start..val_start + vlen].to_vec()))
+        Some((
+            d[key_start..val_start].to_vec(),
+            d[val_start..val_start + vlen].to_vec(),
+        ))
     }
 
     fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
@@ -88,8 +91,10 @@ impl Cdb {
             if slot_off + 8 > self.data.len() {
                 return None;
             }
-            let slot_hash = u32::from_le_bytes(self.data[slot_off..slot_off + 4].try_into().unwrap());
-            let key_pos = u32::from_le_bytes(self.data[slot_off + 4..slot_off + 8].try_into().unwrap());
+            let slot_hash =
+                u32::from_le_bytes(self.data[slot_off..slot_off + 4].try_into().unwrap());
+            let key_pos =
+                u32::from_le_bytes(self.data[slot_off + 4..slot_off + 8].try_into().unwrap());
             // 空槽的判据是记录哈希为 0，不是记录位置为 0；
             // 拿位置判空会把正常槽当成空槽提前退出。
             if slot_hash == 0 {
@@ -125,7 +130,11 @@ impl GrammarTables {
         let get = |k: &str| -> Result<Vec<String>, String> {
             json.get(k)
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().map(|x| x.as_str().unwrap_or_default().to_string()).collect())
+                .map(|a| {
+                    a.iter()
+                        .map(|x| x.as_str().unwrap_or_default().to_string())
+                        .collect()
+                })
                 .ok_or_else(|| format!("{path:?} 缺 {k}"))
         };
         Ok(Self {

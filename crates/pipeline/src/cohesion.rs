@@ -9,17 +9,22 @@
 //! logits 的行/列都是窗内词素下标：row = anaph、col = cand；
 //! special 列（6 个，[ROOT] 除外）无条件对全部词素行放开。
 
-use rayon::prelude::*;
 use crate::morpheme_build::OrderedFeats;
+use rayon::prelude::*;
 
 /// 判断基本句是否为该 cohesion 任务的标注目标。
 pub fn is_target(name: &str, feats: &OrderedFeats) -> bool {
     match name {
         "PasExtractor" => feats.contains("用言") || feats.contains("非用言格解析"),
-        "CoreferenceExtractor" => matches!(feats.get("体言"), Some(crate::morpheme_build::FeatureValue::True)),
+        "CoreferenceExtractor" => matches!(
+            feats.get("体言"),
+            Some(crate::morpheme_build::FeatureValue::True)
+        ),
         "BridgingExtractor" => {
-            matches!(feats.get("体言"), Some(crate::morpheme_build::FeatureValue::True))
-                && !feats.contains("非用言格解析")
+            matches!(
+                feats.get("体言"),
+                Some(crate::morpheme_build::FeatureValue::True)
+            ) && !feats.contains("非用言格解析")
         }
         _ => true,
     }
@@ -159,7 +164,11 @@ pub fn add_cohesion(
                     cand_gi < anaph_gi
                         || (!coref && cand_gi > anaph_gi && same_sentence(cand_gi, anaph_gi))
                 };
-                let v = if allowed { logits[*channel] } else { kwja_heads::mask_tables::MASKED };
+                let v = if allowed {
+                    logits[*channel]
+                } else {
+                    kwja_heads::mask_tables::MASKED
+                };
                 if v > best_v {
                     best_v = v;
                     best_k = k;
@@ -176,7 +185,9 @@ pub fn add_cohesion(
                     },
                 ));
             } else {
-                let nm = special_tokens[best_k - b].trim_start_matches('[').trim_end_matches(']');
+                let nm = special_tokens[best_k - b]
+                    .trim_start_matches('[')
+                    .trim_end_matches(']');
                 if exophora_types.iter().any(|e| e == nm) {
                     out.push((
                         bi,

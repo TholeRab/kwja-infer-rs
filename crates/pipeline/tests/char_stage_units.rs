@@ -31,11 +31,17 @@ fn to_orig_doc_id_strips_window_suffix_only() {
 #[test]
 fn split_document_balances_brackets_and_merges_period_runs() {
     // 以下期望值与 Python 参考实现一致
-    assert_eq!(split_document("「ああ」。いい。"), vec!["「ああ」。", "いい。"]);
+    assert_eq!(
+        split_document("「ああ」。いい。"),
+        vec!["「ああ」。", "いい。"]
+    );
     // 括号跨句末符未闭合时，候选往后接
     assert_eq!(split_document("「ああ。いい。」"), vec!["「ああ。いい。」"]);
     // 连续句末符算一个（正则的 + 号）
-    assert_eq!(split_document("すごい！！本当？"), vec!["すごい！！", "本当？"]);
+    assert_eq!(
+        split_document("すごい！！本当？"),
+        vec!["すごい！！", "本当？"]
+    );
     // 行尾仍不闭合时，剩余小段再按句末符切
     assert_eq!(split_document("「ああ。いい"), vec!["「ああ。", "いい"]);
     assert_eq!(split_document("（あ。い。"), vec!["（あ。", "い。"]);

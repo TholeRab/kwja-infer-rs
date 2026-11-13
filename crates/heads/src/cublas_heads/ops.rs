@@ -7,7 +7,7 @@ use super::{Inner, Weight};
 
 impl Inner {
     /// 显存 scratch 池：按名复用，不足则扩容（旧块不回收，峰值受窗上限约束）。
-pub(super)    unsafe fn buf(&mut self, slot: &'static str, bytes: usize) -> Result<Ptr, String> {
+    pub(super) unsafe fn buf(&mut self, slot: &'static str, bytes: usize) -> Result<Ptr, String> {
         for entry in self.scratch.iter_mut() {
             if entry.0 == slot {
                 if entry.2 < bytes {
@@ -32,7 +32,7 @@ pub(super)    unsafe fn buf(&mut self, slot: &'static str, bytes: usize) -> Resu
     }
 
     /// 页锁定主机暂存池：按名复用，不足则扩容。H2D/D2H 走 pinned 提速。
-pub(super)    unsafe fn pin(&mut self, slot: &'static str, bytes: usize) -> Result<Ptr, String> {
+    pub(super) unsafe fn pin(&mut self, slot: &'static str, bytes: usize) -> Result<Ptr, String> {
         for entry in self.pinned.iter_mut() {
             if entry.0 == slot {
                 if entry.2 < bytes {
@@ -54,24 +54,43 @@ pub(super)    unsafe fn pin(&mut self, slot: &'static str, bytes: usize) -> Resu
         Ok(p)
     }
 
-pub(super)    unsafe fn w(&self, name: &str) -> Result<Weight, String> {
+    pub(super) unsafe fn w(&self, name: &str) -> Result<Weight, String> {
         self.weights
             .get(name)
-            .map(|w| Weight { ptr: w.ptr, numel: w.numel })
+            .map(|w| Weight {
+                ptr: w.ptr,
+                numel: w.numel,
+            })
             .ok_or_else(|| format!("缺权重 {name}"))
     }
 
     /// C_rm(m,n) = X_rm(m,k) @ W_rm(k,n)（cuBLAS 列主序换算：D_cm = W_cm·X_cm，全不转置）。
-pub(super)    unsafe fn gemm_nn(&mut self, x: Ptr, w: Ptr, out: Ptr, m: usize, k: usize, n: usize) -> Result<(), String> {
+    pub(super) unsafe fn gemm_nn(
+        &mut self,
+        x: Ptr,
+        w: Ptr,
+        out: Ptr,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Result<(), String> {
         let alpha = 1.0f32;
         let beta = 0.0f32;
         let st = (self.sgemm)(
-            self.cublas, 0, 0, n as i32, m as i32, k as i32,
+            self.cublas,
+            0,
+            0,
+            n as i32,
+            m as i32,
+            k as i32,
             &alpha as *const f32 as *const c_void,
-            w as *const c_void, n as i32,
-            x as *const c_void, k as i32,
+            w as *const c_void,
+            n as i32,
+            x as *const c_void,
+            k as i32,
             &beta as *const f32 as *const c_void,
-            out as *const c_void, n as i32,
+            out as *const c_void,
+            n as i32,
         );
         if st != 0 {
             return Err(format!("cublasSgemm(NN {m}x{k}x{n}) 失败：{st}"));
@@ -80,16 +99,32 @@ pub(super)    unsafe fn gemm_nn(&mut self, x: Ptr, w: Ptr, out: Ptr, m: usize, k
     }
 
     /// C_rm(m,n) = X_rm(m,k) @ W_rm(n,k)^T（W 按行主序 (n,k) 存储，即 ONNX Gemm transB=1）。
-pub(super)    unsafe fn gemm_tn(&mut self, x: Ptr, w: Ptr, out: Ptr, m: usize, k: usize, n: usize) -> Result<(), String> {
+    pub(super) unsafe fn gemm_tn(
+        &mut self,
+        x: Ptr,
+        w: Ptr,
+        out: Ptr,
+        m: usize,
+        k: usize,
+        n: usize,
+    ) -> Result<(), String> {
         let alpha = 1.0f32;
         let beta = 0.0f32;
         let st = (self.sgemm)(
-            self.cublas, 1, 0, n as i32, m as i32, k as i32,
+            self.cublas,
+            1,
+            0,
+            n as i32,
+            m as i32,
+            k as i32,
             &alpha as *const f32 as *const c_void,
-            w as *const c_void, k as i32,
-            x as *const c_void, k as i32,
+            w as *const c_void,
+            k as i32,
+            x as *const c_void,
+            k as i32,
             &beta as *const f32 as *const c_void,
-            out as *const c_void, n as i32,
+            out as *const c_void,
+            n as i32,
         );
         if st != 0 {
             return Err(format!("cublasSgemm(TN {m}x{k}x{n}) 失败：{st}"));
@@ -97,12 +132,26 @@ pub(super)    unsafe fn gemm_tn(&mut self, x: Ptr, w: Ptr, out: Ptr, m: usize, k
         Ok(())
     }
 
-pub(super)    unsafe fn launch(&self, f: Ptr, total: usize, args: &mut [*mut c_void]) -> Result<(), String> {
+    pub(super) unsafe fn launch(
+        &self,
+        f: Ptr,
+        total: usize,
+        args: &mut [*mut c_void],
+    ) -> Result<(), String> {
         const BLOCK: u32 = 256;
         let grid = ((total as u64) + (BLOCK as u64) - 1) / (BLOCK as u64);
         let st = (self.launch)(
-            f, grid as u32, 1, 1, BLOCK, 1, 1, 0,
-            std::ptr::null_mut(), args.as_mut_ptr(), std::ptr::null_mut(),
+            f,
+            grid as u32,
+            1,
+            1,
+            BLOCK,
+            1,
+            1,
+            0,
+            std::ptr::null_mut(),
+            args.as_mut_ptr(),
+            std::ptr::null_mut(),
         );
         if st != 0 {
             return Err(format!("cuLaunchKernel 失败：{st}"));
@@ -110,7 +159,13 @@ pub(super)    unsafe fn launch(&self, f: Ptr, total: usize, args: &mut [*mut c_v
         Ok(())
     }
 
-pub(super)    unsafe fn bias_gelu(&mut self, x: Ptr, bias: Ptr, n: usize, cols: usize) -> Result<(), String> {
+    pub(super) unsafe fn bias_gelu(
+        &mut self,
+        x: Ptr,
+        bias: Ptr,
+        n: usize,
+        cols: usize,
+    ) -> Result<(), String> {
         let mut p_x = x;
         let mut p_b = bias;
         let mut n_ll = n as i64;
@@ -130,7 +185,13 @@ pub(super)    unsafe fn bias_gelu(&mut self, x: Ptr, bias: Ptr, n: usize, cols: 
         self.launch(self.k_bias_gelu, n, &mut args)
     }
 
-pub(super)    unsafe fn bias_add(&mut self, x: Ptr, bias: Ptr, n: usize, cols: usize) -> Result<(), String> {
+    pub(super) unsafe fn bias_add(
+        &mut self,
+        x: Ptr,
+        bias: Ptr,
+        n: usize,
+        cols: usize,
+    ) -> Result<(), String> {
         let mut p_x = x;
         let mut p_b = bias;
         let mut n_ll = n as i64;
@@ -144,7 +205,7 @@ pub(super)    unsafe fn bias_add(&mut self, x: Ptr, bias: Ptr, n: usize, cols: u
         self.launch(self.k_bias_add, n, &mut args)
     }
 
-pub(super)    unsafe fn gelu(&mut self, x: Ptr, n: usize) -> Result<(), String> {
+    pub(super) unsafe fn gelu(&mut self, x: Ptr, n: usize) -> Result<(), String> {
         let mut p_x = x;
         let mut n_ll = n as i64;
         let mut s = self.sqrt2;
@@ -160,7 +221,13 @@ pub(super)    unsafe fn gelu(&mut self, x: Ptr, n: usize) -> Result<(), String> 
         self.launch(self.k_gelu, n, &mut args)
     }
 
-pub(super)    unsafe fn row_argmax(&mut self, logits: Ptr, cols: usize, rows: usize, out: Ptr) -> Result<(), String> {
+    pub(super) unsafe fn row_argmax(
+        &mut self,
+        logits: Ptr,
+        cols: usize,
+        rows: usize,
+        out: Ptr,
+    ) -> Result<(), String> {
         let mut p_l = logits;
         let mut c_ll = cols as i64;
         let mut r_ll = rows as i64;
@@ -174,7 +241,14 @@ pub(super)    unsafe fn row_argmax(&mut self, logits: Ptr, cols: usize, rows: us
         self.launch(self.k_argmax, rows, &mut args)
     }
 
-pub(super)    unsafe fn bcast_add_gelu(&mut self, base: Ptr, lora: Ptr, out: Ptr, total: usize, l: usize) -> Result<(), String> {
+    pub(super) unsafe fn bcast_add_gelu(
+        &mut self,
+        base: Ptr,
+        lora: Ptr,
+        out: Ptr,
+        total: usize,
+        l: usize,
+    ) -> Result<(), String> {
         let mut p_b = base;
         let mut p_l = lora;
         let mut p_o = out;
@@ -196,7 +270,16 @@ pub(super)    unsafe fn bcast_add_gelu(&mut self, base: Ptr, lora: Ptr, out: Ptr
         self.launch(self.k_bcast_gelu, total, &mut args)
     }
 
-pub(super)    unsafe fn classify_sigmoid(&mut self, g: Ptr, clf: Ptr, bias: Ptr, out: Ptr, rows: usize, inner: usize, l: usize) -> Result<(), String> {
+    pub(super) unsafe fn classify_sigmoid(
+        &mut self,
+        g: Ptr,
+        clf: Ptr,
+        bias: Ptr,
+        out: Ptr,
+        rows: usize,
+        inner: usize,
+        l: usize,
+    ) -> Result<(), String> {
         let mut p_g = g;
         let mut p_c = clf;
         let mut p_b = bias;
@@ -216,7 +299,15 @@ pub(super)    unsafe fn classify_sigmoid(&mut self, g: Ptr, clf: Ptr, bias: Ptr,
         self.launch(self.k_classify, rows * l, &mut args)
     }
 
-pub(super)    unsafe fn coh_bcast_add(&mut self, base: Ptr, delta: Ptr, out: Ptr, total: usize, r: usize, inner: usize) -> Result<(), String> {
+    pub(super) unsafe fn coh_bcast_add(
+        &mut self,
+        base: Ptr,
+        delta: Ptr,
+        out: Ptr,
+        total: usize,
+        r: usize,
+        inner: usize,
+    ) -> Result<(), String> {
         let mut p_b = base;
         let mut p_d = delta;
         let mut p_o = out;
@@ -234,14 +325,14 @@ pub(super)    unsafe fn coh_bcast_add(&mut self, base: Ptr, delta: Ptr, out: Ptr
         self.launch(self.k_coh_add, total, &mut args)
     }
 
-pub(super)    unsafe fn to_device(&self, src: Ptr, dst: Ptr, bytes: usize) -> Result<(), String> {
+    pub(super) unsafe fn to_device(&self, src: Ptr, dst: Ptr, bytes: usize) -> Result<(), String> {
         if (self.memcpy)(dst, src as *const c_void, bytes, H2D) != 0 {
             return Err("H2D 拷贝失败".into());
         }
         Ok(())
     }
 
-pub(super)    unsafe fn to_host(&self, src: Ptr, dst: Ptr, bytes: usize) -> Result<(), String> {
+    pub(super) unsafe fn to_host(&self, src: Ptr, dst: Ptr, bytes: usize) -> Result<(), String> {
         if (self.memcpy)(dst, src as *const c_void, bytes, D2H) != 0 {
             return Err("D2H 拷贝失败".into());
         }
@@ -249,7 +340,12 @@ pub(super)    unsafe fn to_host(&self, src: Ptr, dst: Ptr, bytes: usize) -> Resu
     }
 
     /// 把若干行写进 pinned 暂存（行主序摊平），返回写入的元素数。
-pub(super)    fn flatten_into(rows: &[Vec<f32>], cols: usize, dst: *mut f32, what: &str) -> Result<usize, String> {
+    pub(super) fn flatten_into(
+        rows: &[Vec<f32>],
+        cols: usize,
+        dst: *mut f32,
+        what: &str,
+    ) -> Result<usize, String> {
         let mut n = 0usize;
         for (ri, row) in rows.iter().enumerate() {
             if row.len() != cols {
@@ -263,7 +359,7 @@ pub(super)    fn flatten_into(rows: &[Vec<f32>], cols: usize, dst: *mut f32, wha
         Ok(n)
     }
 
-pub(super)    fn rows_from(dst: &mut Vec<Vec<f32>>, src: &[f32], rows: usize, cols: usize) {
+    pub(super) fn rows_from(dst: &mut Vec<Vec<f32>>, src: &[f32], rows: usize, cols: usize) {
         dst.clear();
         for r in 0..rows {
             dst.push(src[r * cols..(r + 1) * cols].to_vec());

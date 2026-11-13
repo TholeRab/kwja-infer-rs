@@ -1,6 +1,6 @@
 //! 成对选择头（dependency/discourse）的投影与按行计算。
 
-use super::ops::{gelu, Linear};
+use super::ops::{Linear, gelu};
 use super::safetensors::WeightFile;
 
 /// `WordSelectionHead` 的投影结果：source/target 线性层各算一次，行按需取。
@@ -68,7 +68,12 @@ impl SelectionProjection {
 
     /// [`Self::row_gathered`] 的再裁剪：只算 `channels` 里那些标签通道，
     /// `out[k][c]` 对应 `row(i)[cols[k]][channels[c]]`（cohesion 按任务裁剪用）。
-    pub fn row_gathered_channels(&self, i: usize, cols: &[usize], channels: &[usize]) -> Vec<Vec<f32>> {
+    pub fn row_gathered_channels(
+        &self,
+        i: usize,
+        cols: &[usize],
+        channels: &[usize],
+    ) -> Vec<Vec<f32>> {
         cols.iter()
             .map(|&j| {
                 let tj = &self.ht[j];
@@ -89,10 +94,11 @@ impl SelectionProjection {
 
     /// GPU 路径：source/target 两个线性层的结果由 ORT 算好送来，这里只装配。
     pub fn from_projected(head: &SelectionHead, hs: Vec<Vec<f32>>, ht: Vec<Vec<f32>>) -> Self {
-        let weight_t = ndarray::Array2::from_shape_vec((head.labels, head.hid), head.output_weight.clone())
-            .expect("输出层权重整形失败")
-            .t()
-            .to_owned();
+        let weight_t =
+            ndarray::Array2::from_shape_vec((head.labels, head.hid), head.output_weight.clone())
+                .expect("输出层权重整形失败")
+                .t()
+                .to_owned();
         Self {
             hs,
             ht,
@@ -122,16 +128,23 @@ impl SelectionHead {
         let shape = w.shape(&format!("{prefix}.output_layer.weight"));
         let labels = shape[0];
         let hid = shape[1];
-        Self { l_source, l_target, output_weight, labels, hid }
+        Self {
+            l_source,
+            l_target,
+            output_weight,
+            labels,
+            hid,
+        }
     }
 
     pub fn project(&self, pooled: &[Vec<f32>]) -> SelectionProjection {
         let hs = self.l_source.forward_rows(pooled);
         let ht = self.l_target.forward_rows(pooled);
-        let weight_t = ndarray::Array2::from_shape_vec((self.labels, self.hid), self.output_weight.clone())
-            .expect("输出层权重整形失败")
-            .t()
-            .to_owned();
+        let weight_t =
+            ndarray::Array2::from_shape_vec((self.labels, self.hid), self.output_weight.clone())
+                .expect("输出层权重整形失败")
+                .t()
+                .to_owned();
         SelectionProjection {
             hs,
             ht,
@@ -142,4 +155,3 @@ impl SelectionHead {
         }
     }
 }
-

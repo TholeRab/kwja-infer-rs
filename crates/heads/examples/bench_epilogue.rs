@@ -34,16 +34,56 @@ type CudaMemcpy = unsafe extern "system" fn(Ptr, *const c_void, usize, i32) -> i
 type CudaSync = unsafe extern "system" fn() -> i32;
 type CudaSetDevice = unsafe extern "system" fn(i32) -> i32;
 type BlasCreate = unsafe extern "system" fn(*mut Ptr) -> i32;
-type Sgemm = unsafe extern "system" fn(Ptr, i32, i32, i32, i32, i32, *const c_void, *const c_void, i32, *const c_void, i32, *const c_void, *const c_void, i32) -> i32;
+type Sgemm = unsafe extern "system" fn(
+    Ptr,
+    i32,
+    i32,
+    i32,
+    i32,
+    i32,
+    *const c_void,
+    *const c_void,
+    i32,
+    *const c_void,
+    i32,
+    *const c_void,
+    *const c_void,
+    i32,
+) -> i32;
 type LtCreate = unsafe extern "system" fn(*mut Ptr) -> i32;
 type DescCreate = unsafe extern "system" fn(*mut Ptr, u32, u32) -> i32;
 type DescAttr = unsafe extern "system" fn(Ptr, u32, *const c_void, usize) -> i32;
 type LayoutCreate = unsafe extern "system" fn(*mut Ptr, u32, u64, u64, i64) -> i32;
 type PrefCreate = unsafe extern "system" fn(*mut Ptr) -> i32;
 type PrefAttr = unsafe extern "system" fn(Ptr, u32, *const c_void, usize) -> i32;
-type Heuristic = unsafe extern "system" fn(Ptr, Ptr, Ptr, Ptr, Ptr, Ptr, Ptr, i32, *mut Heur, *mut i32) -> i32;
-type Matmul = unsafe extern "system" fn(Ptr, Ptr, *const c_void, *const c_void, Ptr, *const c_void, Ptr, *const c_void, *const c_void, Ptr, *const c_void, Ptr, Ptr, Ptr, usize, Ptr) -> i32;
-type NvrtcCreate = unsafe extern "system" fn(*mut Ptr, *const c_char, *const c_char, i32, *const *const c_char, *const *const c_char) -> i32;
+type Heuristic =
+    unsafe extern "system" fn(Ptr, Ptr, Ptr, Ptr, Ptr, Ptr, Ptr, i32, *mut Heur, *mut i32) -> i32;
+type Matmul = unsafe extern "system" fn(
+    Ptr,
+    Ptr,
+    *const c_void,
+    *const c_void,
+    Ptr,
+    *const c_void,
+    Ptr,
+    *const c_void,
+    *const c_void,
+    Ptr,
+    *const c_void,
+    Ptr,
+    Ptr,
+    Ptr,
+    usize,
+    Ptr,
+) -> i32;
+type NvrtcCreate = unsafe extern "system" fn(
+    *mut Ptr,
+    *const c_char,
+    *const c_char,
+    i32,
+    *const *const c_char,
+    *const *const c_char,
+) -> i32;
 type NvrtcCompile = unsafe extern "system" fn(Ptr, i32, *const *const c_char) -> i32;
 type NvrtcPtxSize = unsafe extern "system" fn(Ptr, *mut usize) -> i32;
 type NvrtcPtx = unsafe extern "system" fn(Ptr, *mut c_char) -> i32;
@@ -55,7 +95,19 @@ type CuCtxRetain = unsafe extern "system" fn(*mut Ptr, i32) -> i32;
 type CuCtxSet = unsafe extern "system" fn(Ptr) -> i32;
 type CuModuleLoad = unsafe extern "system" fn(*mut Ptr, *const c_void) -> i32;
 type CuGetFn = unsafe extern "system" fn(*mut Ptr, Ptr, *const c_char) -> i32;
-type CuLaunch = unsafe extern "system" fn(Ptr, u32, u32, u32, u32, u32, u32, u32, Ptr, *mut *mut c_void, *mut *mut c_void) -> i32;
+type CuLaunch = unsafe extern "system" fn(
+    Ptr,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    Ptr,
+    *mut *mut c_void,
+    *mut *mut c_void,
+) -> i32;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -98,7 +150,9 @@ extern "C" __global__ void bias_add_inplace(float* x, const float* b, long long 
 "#;
 
 fn lcg(seed: &mut u64) -> f32 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     ((*seed >> 33) as f32) / (u32::MAX as f32) - 0.5
 }
 
@@ -133,22 +187,33 @@ fn main() {
     let blas_create: BlasCreate = unsafe { std::mem::transmute(sym(blas_dll, "cublasCreate_v2")) };
     let sgemm: Sgemm = unsafe { std::mem::transmute(sym(blas_dll, "cublasSgemm_v2")) };
     let lt_create: LtCreate = unsafe { std::mem::transmute(sym(lt_dll, "cublasLtCreate")) };
-    let desc_create: DescCreate = unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulDescCreate")) };
-    let desc_attr: DescAttr = unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulDescSetAttribute")) };
-    let layout_create: LayoutCreate = unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatrixLayoutCreate")) };
-    let pref_create: PrefCreate = unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulPreferenceCreate")) };
-    let pref_attr: PrefAttr = unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulPreferenceSetAttribute")) };
-    let heuristic: Heuristic = unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulAlgoGetHeuristic")) };
+    let desc_create: DescCreate =
+        unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulDescCreate")) };
+    let desc_attr: DescAttr =
+        unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulDescSetAttribute")) };
+    let layout_create: LayoutCreate =
+        unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatrixLayoutCreate")) };
+    let pref_create: PrefCreate =
+        unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulPreferenceCreate")) };
+    let pref_attr: PrefAttr =
+        unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulPreferenceSetAttribute")) };
+    let heuristic: Heuristic =
+        unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmulAlgoGetHeuristic")) };
     let matmul: Matmul = unsafe { std::mem::transmute(sym(lt_dll, "cublasLtMatmul")) };
-    let nvrtc_create: NvrtcCreate = unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcCreateProgram")) };
-    let nvrtc_compile: NvrtcCompile = unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcCompileProgram")) };
-    let nvrtc_ptx_size: NvrtcPtxSize = unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcGetPTXSize")) };
+    let nvrtc_create: NvrtcCreate =
+        unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcCreateProgram")) };
+    let nvrtc_compile: NvrtcCompile =
+        unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcCompileProgram")) };
+    let nvrtc_ptx_size: NvrtcPtxSize =
+        unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcGetPTXSize")) };
     let nvrtc_ptx: NvrtcPtx = unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcGetPTX")) };
-    let nvrtc_destroy: NvrtcDestroy = unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcDestroyProgram")) };
+    let nvrtc_destroy: NvrtcDestroy =
+        unsafe { std::mem::transmute(sym(nvrtc_dll, "nvrtcDestroyProgram")) };
     let cu_init: CuInit = unsafe { std::mem::transmute(sym(drv, "cuInit")) };
     let cu_device_get: CuDeviceGet = unsafe { std::mem::transmute(sym(drv, "cuDeviceGet")) };
     let cu_get_attr: CuGetAttr = unsafe { std::mem::transmute(sym(drv, "cuDeviceGetAttribute")) };
-    let cu_ctx_retain: CuCtxRetain = unsafe { std::mem::transmute(sym(drv, "cuDevicePrimaryCtxRetain")) };
+    let cu_ctx_retain: CuCtxRetain =
+        unsafe { std::mem::transmute(sym(drv, "cuDevicePrimaryCtxRetain")) };
     let cu_ctx_set: CuCtxSet = unsafe { std::mem::transmute(sym(drv, "cuCtxSetCurrent")) };
     let cu_module_load: CuModuleLoad = unsafe { std::mem::transmute(sym(drv, "cuModuleLoadData")) };
     let cu_get_fn: CuGetFn = unsafe { std::mem::transmute(sym(drv, "cuModuleGetFunction")) };
@@ -176,7 +241,17 @@ fn main() {
         let src = std::ffi::CString::new(KERNEL_SRC).unwrap();
         let pname = std::ffi::CString::new("epi_kernels.cu").unwrap();
         let mut prog: Ptr = std::ptr::null_mut();
-        assert_eq!(nvrtc_create(&mut prog, src.as_ptr(), pname.as_ptr(), 0, std::ptr::null(), std::ptr::null()), 0);
+        assert_eq!(
+            nvrtc_create(
+                &mut prog,
+                src.as_ptr(),
+                pname.as_ptr(),
+                0,
+                std::ptr::null(),
+                std::ptr::null()
+            ),
+            0
+        );
         let arch = std::ffi::CString::new(format!("--gpu-architecture=sm_{major}{minor}")).unwrap();
         let opts = [arch.as_ptr()];
         assert_eq!(nvrtc_compile(prog, 1, opts.as_ptr()), 0, "nvrtc 编译失败");
@@ -186,27 +261,93 @@ fn main() {
         assert_eq!(nvrtc_ptx(prog, ptx.as_mut_ptr()), 0);
         let _ = nvrtc_destroy(&mut prog);
         let mut module: Ptr = std::ptr::null_mut();
-        assert_eq!(cu_module_load(&mut module, ptx.as_ptr() as *const c_void), 0);
+        assert_eq!(
+            cu_module_load(&mut module, ptx.as_ptr() as *const c_void),
+            0
+        );
         let mut k_bias_gelu: Ptr = std::ptr::null_mut();
         let mut k_bias_add: Ptr = std::ptr::null_mut();
         let kn = |s: &str| std::ffi::CString::new(s).unwrap();
-        assert_eq!(cu_get_fn(&mut k_bias_gelu, module, kn("bias_gelu_inplace").as_ptr()), 0);
-        assert_eq!(cu_get_fn(&mut k_bias_add, module, kn("bias_add_inplace").as_ptr()), 0);
+        assert_eq!(
+            cu_get_fn(&mut k_bias_gelu, module, kn("bias_gelu_inplace").as_ptr()),
+            0
+        );
+        assert_eq!(
+            cu_get_fn(&mut k_bias_add, module, kn("bias_add_inplace").as_ptr()),
+            0
+        );
 
         let launch = |f: Ptr, total: usize, args: &mut [*mut c_void]| {
             const BLOCK: u32 = 256;
             let grid = ((total as u64) + BLOCK as u64 - 1) / BLOCK as u64;
-            assert_eq!(cu_launch(f, grid as u32, 1, 1, BLOCK, 1, 1, 0, std::ptr::null_mut(), args.as_mut_ptr(), std::ptr::null_mut()), 0);
+            assert_eq!(
+                cu_launch(
+                    f,
+                    grid as u32,
+                    1,
+                    1,
+                    BLOCK,
+                    1,
+                    1,
+                    0,
+                    std::ptr::null_mut(),
+                    args.as_mut_ptr(),
+                    std::ptr::null_mut()
+                ),
+                0
+            );
         };
 
         let cases = [
-            Case { name: "口味鉴定", m: 16, n: 64, k: 768, gelu: true },
-            Case { name: "reading-h1", m: 224, n: 768, k: 768, gelu: true },
-            Case { name: "reading-out", m: 224, n: 12907, k: 768, gelu: false },
-            Case { name: "reading-out偶", m: 224, n: 12906, k: 768, gelu: false },
-            Case { name: "reading-out4k", m: 224, n: 4096, k: 768, gelu: false },
-            Case { name: "tagger-h1", m: 176, n: 768, k: 768, gelu: true },
-            Case { name: "tagger-out", m: 176, n: 35, k: 768, gelu: false },
+            Case {
+                name: "口味鉴定",
+                m: 16,
+                n: 64,
+                k: 768,
+                gelu: true,
+            },
+            Case {
+                name: "reading-h1",
+                m: 224,
+                n: 768,
+                k: 768,
+                gelu: true,
+            },
+            Case {
+                name: "reading-out",
+                m: 224,
+                n: 12907,
+                k: 768,
+                gelu: false,
+            },
+            Case {
+                name: "reading-out偶",
+                m: 224,
+                n: 12906,
+                k: 768,
+                gelu: false,
+            },
+            Case {
+                name: "reading-out4k",
+                m: 224,
+                n: 4096,
+                k: 768,
+                gelu: false,
+            },
+            Case {
+                name: "tagger-h1",
+                m: 176,
+                n: 768,
+                k: 768,
+                gelu: true,
+            },
+            Case {
+                name: "tagger-out",
+                m: 176,
+                n: 35,
+                k: 768,
+                gelu: false,
+            },
         ];
 
         for c in &cases {
@@ -226,15 +367,36 @@ fn main() {
             assert_eq!(cuda_malloc(&mut dd, m * n * 4), 0);
             let ws_size = 32usize << 20;
             assert_eq!(cuda_malloc(&mut ws, ws_size), 0);
-            assert_eq!(cuda_memcpy(dw, w.as_ptr() as *const c_void, n * k * 4, H2D), 0);
-            assert_eq!(cuda_memcpy(dx, x.as_ptr() as *const c_void, m * k * 4, H2D), 0);
+            assert_eq!(
+                cuda_memcpy(dw, w.as_ptr() as *const c_void, n * k * 4, H2D),
+                0
+            );
+            assert_eq!(
+                cuda_memcpy(dx, x.as_ptr() as *const c_void, m * k * 4, H2D),
+                0
+            );
             assert_eq!(cuda_memcpy(db, b.as_ptr() as *const c_void, n * 4, H2D), 0);
 
             // A 路（现生产）：Sgemm+自写核
             let sgemm_once = || {
                 let alpha = 1.0f32;
                 let beta = 0.0f32;
-                let st = sgemm(blas, 0, 0, n as i32, m as i32, k as i32, &alpha as *const f32 as Ptr, dw as *const c_void, n as i32, dx as *const c_void, k as i32, &beta as *const f32 as Ptr, dd as *const c_void, n as i32);
+                let st = sgemm(
+                    blas,
+                    0,
+                    0,
+                    n as i32,
+                    m as i32,
+                    k as i32,
+                    &alpha as *const f32 as Ptr,
+                    dw as *const c_void,
+                    n as i32,
+                    dx as *const c_void,
+                    k as i32,
+                    &beta as *const f32 as Ptr,
+                    dd as *const c_void,
+                    n as i32,
+                );
                 assert_eq!(st, 0);
                 let mut n_ll = (m * n) as i64;
                 let mut c_ll = n as i64;
@@ -244,10 +406,23 @@ fn main() {
                     let mut s = std::f32::consts::SQRT_2;
                     let mut o = 1.0f32;
                     let mut h = 0.5f32;
-                    let mut args: [*mut c_void; 7] = [&mut p_x as *mut _ as *mut c_void, &mut p_b as *mut _ as *mut c_void, &mut n_ll as *mut _ as *mut c_void, &mut c_ll as *mut _ as *mut c_void, &mut s as *mut _ as *mut c_void, &mut o as *mut _ as *mut c_void, &mut h as *mut _ as *mut c_void];
+                    let mut args: [*mut c_void; 7] = [
+                        &mut p_x as *mut _ as *mut c_void,
+                        &mut p_b as *mut _ as *mut c_void,
+                        &mut n_ll as *mut _ as *mut c_void,
+                        &mut c_ll as *mut _ as *mut c_void,
+                        &mut s as *mut _ as *mut c_void,
+                        &mut o as *mut _ as *mut c_void,
+                        &mut h as *mut _ as *mut c_void,
+                    ];
                     launch(k_bias_gelu, m * n, &mut args);
                 } else {
-                    let mut args: [*mut c_void; 4] = [&mut p_x as *mut _ as *mut c_void, &mut p_b as *mut _ as *mut c_void, &mut n_ll as *mut _ as *mut c_void, &mut c_ll as *mut _ as *mut c_void];
+                    let mut args: [*mut c_void; 4] = [
+                        &mut p_x as *mut _ as *mut c_void,
+                        &mut p_b as *mut _ as *mut c_void,
+                        &mut n_ll as *mut _ as *mut c_void,
+                        &mut c_ll as *mut _ as *mut c_void,
+                    ];
                     launch(k_bias_add, m * n, &mut args);
                 }
             };
@@ -267,56 +442,149 @@ fn main() {
             assert_eq!(desc_create(&mut desc, COMPUTE_32F, CUDA_R_32F), 0);
             let op_t = OP_T;
             let op_n = 0u32;
-            assert_eq!(desc_attr(desc, ATTR_TRANSA, &op_t as *const u32 as Ptr, 4), 0);
-            assert_eq!(desc_attr(desc, ATTR_TRANSB, &op_n as *const u32 as Ptr, 4), 0);
+            assert_eq!(
+                desc_attr(desc, ATTR_TRANSA, &op_t as *const u32 as Ptr, 4),
+                0
+            );
+            assert_eq!(
+                desc_attr(desc, ATTR_TRANSB, &op_n as *const u32 as Ptr, 4),
+                0
+            );
             let epi = if c.gelu { EPI_GELU_BIAS } else { EPI_BIAS };
-            assert_eq!(desc_attr(desc, ATTR_EPILOGUE, &epi as *const u32 as Ptr, 4), 0);
-            assert_eq!(desc_attr(desc, ATTR_BIAS_PTR, &db as *const Ptr as Ptr, 8), 0);
+            assert_eq!(
+                desc_attr(desc, ATTR_EPILOGUE, &epi as *const u32 as Ptr, 4),
+                0
+            );
+            assert_eq!(
+                desc_attr(desc, ATTR_BIAS_PTR, &db as *const Ptr as Ptr, 8),
+                0
+            );
             let mut la: Ptr = std::ptr::null_mut();
             let mut lb: Ptr = std::ptr::null_mut();
             let mut ld: Ptr = std::ptr::null_mut();
-            assert_eq!(layout_create(&mut la, CUDA_R_32F, k as u64, n as u64, k as i64), 0);
-            assert_eq!(layout_create(&mut lb, CUDA_R_32F, k as u64, m as u64, k as i64), 0);
-            assert_eq!(layout_create(&mut ld, CUDA_R_32F, n as u64, m as u64, n as i64), 0);
+            assert_eq!(
+                layout_create(&mut la, CUDA_R_32F, k as u64, n as u64, k as i64),
+                0
+            );
+            assert_eq!(
+                layout_create(&mut lb, CUDA_R_32F, k as u64, m as u64, k as i64),
+                0
+            );
+            assert_eq!(
+                layout_create(&mut ld, CUDA_R_32F, n as u64, m as u64, n as i64),
+                0
+            );
             let mut pref: Ptr = std::ptr::null_mut();
             assert_eq!(pref_create(&mut pref), 0);
-            assert_eq!(pref_attr(pref, ATTR_WS_BYTES, &ws_size as *const usize as Ptr, 8), 0);
-            let mut hs = [Heur { algo: [0; 8], workspace: 0, state: -1, waves_count: 0.0, reserved: [0; 4] }; 8];
+            assert_eq!(
+                pref_attr(pref, ATTR_WS_BYTES, &ws_size as *const usize as Ptr, 8),
+                0
+            );
+            let mut hs = [Heur {
+                algo: [0; 8],
+                workspace: 0,
+                state: -1,
+                waves_count: 0.0,
+                reserved: [0; 4],
+            }; 8];
             let mut cnt = 0i32;
-            assert_eq!(heuristic(lt, desc, la, lb, ld, ld, pref, 8, hs.as_mut_ptr(), &mut cnt), 0);
+            assert_eq!(
+                heuristic(lt, desc, la, lb, ld, ld, pref, 8, hs.as_mut_ptr(), &mut cnt),
+                0
+            );
             if cnt == 0 || hs[0].state != 0 {
                 println!("{}: 无可用算法（cnt={cnt} state={}）", c.name, hs[0].state);
                 continue;
             }
-            eprintln!("  [{}] cnt={cnt} ws需求={}B waves={:.2}", c.name, hs[0].workspace, hs[0].waves_count);
+            eprintln!(
+                "  [{}] cnt={cnt} ws需求={}B waves={:.2}",
+                c.name, hs[0].workspace, hs[0].waves_count
+            );
             let algo = hs[0].algo;
             let lt_once = || {
                 let alpha = 1.0f32;
                 let beta = 0.0f32;
-                matmul(lt, desc, &alpha as *const f32 as Ptr, dw as *const c_void, la, dx as *const c_void, lb, &beta as *const f32 as Ptr, dd as *const c_void, ld, dd, ld, &algo as *const [u64; 8] as Ptr, ws, ws_size, std::ptr::null_mut())
+                matmul(
+                    lt,
+                    desc,
+                    &alpha as *const f32 as Ptr,
+                    dw as *const c_void,
+                    la,
+                    dx as *const c_void,
+                    lb,
+                    &beta as *const f32 as Ptr,
+                    dd as *const c_void,
+                    ld,
+                    dd,
+                    ld,
+                    &algo as *const [u64; 8] as Ptr,
+                    ws,
+                    ws_size,
+                    std::ptr::null_mut(),
+                )
             };
             let st0 = lt_once();
             if st0 != 0 {
                 println!("{}: 主选组合状态 {st0}，开始扫矩阵：", c.name);
                 for epi_try in [0u32, 1, 2, 3, 4, 5] {
-                    assert_eq!(desc_attr(desc, ATTR_EPILOGUE, &epi_try as *const u32 as Ptr, 4), 0);
-                    let mut h2 = [Heur { algo: [0; 8], workspace: 0, state: -1, waves_count: 0.0, reserved: [0; 4] }; 8];
+                    assert_eq!(
+                        desc_attr(desc, ATTR_EPILOGUE, &epi_try as *const u32 as Ptr, 4),
+                        0
+                    );
+                    let mut h2 = [Heur {
+                        algo: [0; 8],
+                        workspace: 0,
+                        state: -1,
+                        waves_count: 0.0,
+                        reserved: [0; 4],
+                    }; 8];
                     let mut c2 = 0i32;
-                    assert_eq!(heuristic(lt, desc, la, lb, ld, ld, pref, 8, h2.as_mut_ptr(), &mut c2), 0);
+                    assert_eq!(
+                        heuristic(lt, desc, la, lb, ld, ld, pref, 8, h2.as_mut_ptr(), &mut c2),
+                        0
+                    );
                     let mut line = format!("  epi={epi_try}:");
                     for a in 0..c2 {
                         let al = h2[a as usize].algo;
-                        let st = matmul(lt, desc, &1.0f32 as *const f32 as Ptr, dw as *const c_void, la, dx as *const c_void, lb, &0.0f32 as *const f32 as Ptr, dd as *const c_void, ld, dd, ld, &al as *const [u64; 8] as Ptr, ws, ws_size, std::ptr::null_mut());
+                        let st = matmul(
+                            lt,
+                            desc,
+                            &1.0f32 as *const f32 as Ptr,
+                            dw as *const c_void,
+                            la,
+                            dx as *const c_void,
+                            lb,
+                            &0.0f32 as *const f32 as Ptr,
+                            dd as *const c_void,
+                            ld,
+                            dd,
+                            ld,
+                            &al as *const [u64; 8] as Ptr,
+                            ws,
+                            ws_size,
+                            std::ptr::null_mut(),
+                        );
                         line.push_str(&format!(" a{a}={st}"));
                     }
                     println!("{line}");
                 }
-                assert_eq!(desc_attr(desc, ATTR_EPILOGUE, &epi as *const u32 as Ptr, 4), 0);
+                assert_eq!(
+                    desc_attr(desc, ATTR_EPILOGUE, &epi as *const u32 as Ptr, 4),
+                    0
+                );
                 continue;
             }
             assert_eq!(cuda_sync(), 0);
             let mut d_ref = vec![0f32; m * n];
-            assert_eq!(cuda_memcpy(d_ref.as_mut_ptr() as Ptr, dd as *const c_void, m * n * 4, D2H), 0);
+            assert_eq!(
+                cuda_memcpy(
+                    d_ref.as_mut_ptr() as Ptr,
+                    dd as *const c_void,
+                    m * n * 4,
+                    D2H
+                ),
+                0
+            );
             let t = Instant::now();
             for _ in 0..50 {
                 lt_once();
@@ -344,7 +612,12 @@ fn main() {
                 }
                 eprintln!("  口味鉴定：对 erf maxdiff={d_erf:.3e}，对 tanh maxdiff={d_tanh:.3e}");
             }
-            println!("{} {}: Sgemm+核 {a_ms:.3} ms vs Lt融合 {b_ms:.3} ms（{:+.1}%）", if b_ms < a_ms { "快" } else { "慢" }, c.name, (b_ms / a_ms - 1.0) * 100.0);
+            println!(
+                "{} {}: Sgemm+核 {a_ms:.3} ms vs Lt融合 {b_ms:.3} ms（{:+.1}%）",
+                if b_ms < a_ms { "快" } else { "慢" },
+                c.name,
+                (b_ms / a_ms - 1.0) * 100.0
+            );
         }
     }
 }

@@ -1,6 +1,6 @@
 //! LoRA 增量与多标签头。
 
-use super::ops::{gelu, Linear};
+use super::ops::{Linear, gelu};
 use super::safetensors::WeightFile;
 
 /// `LoRADelta`：dense_a (hid, rank, labels) + dense_b (rank, hid, labels)。
@@ -24,7 +24,13 @@ impl LoraDelta {
         let hid = shape[0];
         let rank = shape[1];
         let labels = shape[2];
-        Self { a, b, hid, rank, labels }
+        Self {
+            a,
+            b,
+            hid,
+            rank,
+            labels,
+        }
     }
 
     /// `tmp[s, r, l] = Σ_h pooled[s, h]·A[h, r, l]`，返回 (rows*rank*labels) 平坦缓冲。
@@ -90,7 +96,13 @@ impl LoraMultiLabelHead {
         let classifier_bias = w.f32(&format!("{prefix}.classifier_bias"));
         let shape = w.shape(&format!("{prefix}.classifier_weight"));
         let labels = shape[1];
-        Self { dense, delta, classifier_weight, classifier_bias, labels }
+        Self {
+            dense,
+            delta,
+            classifier_weight,
+            classifier_bias,
+            labels,
+        }
     }
 
     /// 输入 (rows, hid)，输出 (rows, labels) 的 sigmoid 概率。
@@ -117,7 +129,8 @@ impl LoraMultiLabelHead {
                 for (h, &dense_h) in dense_s.iter().enumerate() {
                     let mut delta = 0.0f32;
                     for r in 0..d.rank {
-                        delta += tmp_s[r * d.labels + l] * d.b[r * d.hid * d.labels + h * d.labels + l];
+                        delta +=
+                            tmp_s[r * d.labels + l] * d.b[r * d.hid * d.labels + h * d.labels + l];
                     }
                     let activated = gelu(dense_h + delta);
                     acc += activated * self.classifier_weight[h * self.labels + l];
@@ -129,4 +142,3 @@ impl LoraMultiLabelHead {
         out
     }
 }
-

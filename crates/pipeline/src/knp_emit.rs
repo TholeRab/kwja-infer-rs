@@ -70,19 +70,33 @@ pub fn feature_string(feats: &OrderedFeats) -> String {
 /// 拼基本句行（+ nD 行头与 rel/features 排布）。
 ///
 /// `rels`：[(rel, target, sid, bp_index)]；sid 为 None 表示指外（无 id）。
-pub fn bp_header(parent: i32, feats: &str, rels: &[(String, String, Option<String>, Option<usize>)], dep_type: Option<&str>) -> String {
+pub fn bp_header(
+    parent: i32,
+    feats: &str,
+    rels: &[(String, String, Option<String>, Option<usize>)],
+    dep_type: Option<&str>,
+) -> String {
     let mut buf: Vec<String> = Vec::new();
     for (t, tgt, sid, bidx) in rels {
         match (sid, bidx) {
             (None, _) => buf.push(format!("<rel type=\"{t}\" target=\"{tgt}\"/>")),
-            (Some(sid), Some(bidx)) => {
-                buf.push(format!("<rel type=\"{t}\" target=\"{tgt}\" sid=\"{sid}\" id=\"{bidx}\"/>"))
-            }
-            (Some(sid), None) => buf.push(format!("<rel type=\"{t}\" target=\"{tgt}\" sid=\"{sid}\"/>")),
+            (Some(sid), Some(bidx)) => buf.push(format!(
+                "<rel type=\"{t}\" target=\"{tgt}\" sid=\"{sid}\" id=\"{bidx}\"/>"
+            )),
+            (Some(sid), None) => buf.push(format!(
+                "<rel type=\"{t}\" target=\"{tgt}\" sid=\"{sid}\"/>"
+            )),
         }
     }
     let dt = dep_type.unwrap_or("D");
-    let mut s = format!("+ {}{dt}", if parent >= 0 { parent.to_string() } else { "-1".to_string() });
+    let mut s = format!(
+        "+ {}{dt}",
+        if parent >= 0 {
+            parent.to_string()
+        } else {
+            "-1".to_string()
+        }
+    );
     // rel 与 features 之间不能加空格；没有 rel 时 features 前要空格。
     if !buf.is_empty() {
         s.push(' ');

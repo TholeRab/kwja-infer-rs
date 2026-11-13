@@ -13,7 +13,10 @@ use crate::mask_tables::{BASE_PHRASE_FEATURES, WORD_FEATURES};
 
 const _: () = {
     assert!(WORD_FEATURES.len() == 5, "WORD_FEATURES 应为 5 类");
-    assert!(BASE_PHRASE_FEATURES.len() == 64, "BASE_PHRASE_FEATURES 应为 64 类");
+    assert!(
+        BASE_PHRASE_FEATURES.len() == 64,
+        "BASE_PHRASE_FEATURES 应为 64 类"
+    );
 };
 
 /// WORD_FEATURES 里各类的下标（与 mask_tables::WORD_FEATURES 同序）。

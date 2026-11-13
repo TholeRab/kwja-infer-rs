@@ -6,9 +6,9 @@ use std::collections::HashMap;
 use kwja_heads::forward::{RelationWiseProjection, SelectionProjection};
 use kwja_heads::sequence_labeling::{get_morpheme_attribute_predictions, viterbi_decode};
 
-use crate::chunking::{add_bp_features, add_ne, chunk_plain, BasePhrase, Chunk};
-use crate::dependency::{add_dependency, DepCandidate};
-use crate::morpheme_build::{build_morphemes, FeatureValue, FlatMorpheme, MorphemeBuildInput};
+use crate::chunking::{BasePhrase, Chunk, add_bp_features, add_ne, chunk_plain};
+use crate::dependency::{DepCandidate, add_dependency};
+use crate::morpheme_build::{FeatureValue, FlatMorpheme, MorphemeBuildInput, build_morphemes};
 use crate::word_encode::WindowPrep;
 use crate::word_predict::WordPredictor;
 use crate::word_stage::WordWindow;
@@ -43,7 +43,12 @@ pub(crate) fn get_word_level_readings(
 }
 
 /// 依存掩码：目标句的块对角（除对角线）+ [ROOT] 列（扁平化的 seq 行 seq 列）。
-pub(crate) fn dependency_mask(ranges: &[(usize, usize)], si: usize, root_gi: usize, seq: usize) -> Vec<bool> {
+pub(crate) fn dependency_mask(
+    ranges: &[(usize, usize)],
+    si: usize,
+    root_gi: usize,
+    seq: usize,
+) -> Vec<bool> {
     let mut mask = vec![false; seq * seq];
     let (lo, hi) = ranges[si];
     for i in lo..hi {
@@ -91,9 +96,7 @@ fn topk_indices(row: &[f32], k: usize) -> Vec<usize> {
 /// 把 sid 里的 -s\d+i\d+- 窗标记替换回 -；不能剥 2026xxxxxxxx-N- 这类日期前缀。
 pub(crate) fn strip_subdoc(sid: &str) -> String {
     static PAT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let pat = PAT.get_or_init(|| {
-        regex::Regex::new(r"-s\d+i\d+-").expect("子文档标记正则编译失败")
-    });
+    let pat = PAT.get_or_init(|| regex::Regex::new(r"-s\d+i\d+-").expect("子文档标记正则编译失败"));
     pat.replace_all(sid, "-").into_owned()
 }
 
@@ -185,17 +188,17 @@ impl WordPredictor {
         // 投影。行集口径与 CPU 路径一致：reading 吃 token 级，其余头吃含 special 区
         // 的全量 pooled（依存与 cohesion 的候选列要取 [ROOT] 等特殊词位），词素级
         // 输出由下游再切 [..n_morphemes]。
-        let gpu_out: Option<kwja_heads::gpu_heads::FusedHeadsOutput> =
-            match self.gpu_heads.as_ref() {
-                Some(g) => {
-                    // pooled 只送「真词素+special 区」——其后的填充行没有任何
-                    //   消费者（依存/cohesion/discourse 的行列下标全都 < 这里），
-                    //   GPU 的投影与 reading 计算量随行数走，不送白算的填充行。
-                    let usable = n_morphemes + self.tables.dataset_special_tokens().len();
-                    Some(g.forward_fused(token_rows, &pooled[..usable])?)
-                }
-                None => None,
-            };
+        let gpu_out: Option<kwja_heads::gpu_heads::FusedHeadsOutput> = match self.gpu_heads.as_ref()
+        {
+            Some(g) => {
+                // pooled 只送「真词素+special 区」——其后的填充行没有任何
+                //   消费者（依存/cohesion/discourse 的行列下标全都 < 这里），
+                //   GPU 的投影与 reading 计算量随行数走，不送白算的填充行。
+                let usable = n_morphemes + self.tables.dataset_special_tokens().len();
+                Some(g.forward_fused(token_rows, &pooled[..usable])?)
+            }
+            None => None,
+        };
         let (reading_argmax, wf_prob, ne_logits, bf_prob, attrs) = match &gpu_out {
             Some(o) => {
                 let attrs = get_morpheme_attribute_predictions(
@@ -269,11 +272,13 @@ impl WordPredictor {
             (&self.tables.unk, &self.tables.id),
         );
 
-
         // ---- 组装词素（词典/jinf/同形词；readings 即模型读音，同时用于
         //      意味素性查找与 KNP 读方字段）----
         if dbg4 {
-            eprintln!("      encoder+heads {:.1} ms", t_enc.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "      encoder+heads {:.1} ms",
+                t_enc.elapsed().as_secs_f64() * 1000.0
+            );
         }
         let t_build = std::time::Instant::now();
         let mut flat = build_morphemes(
@@ -292,7 +297,10 @@ impl WordPredictor {
         );
 
         if dbg4 {
-            eprintln!("      build_morphemes {:.1} ms", t_build.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "      build_morphemes {:.1} ms",
+                t_build.elapsed().as_secs_f64() * 1000.0
+            );
         }
         // ---- 句区间与目标句 ----
         let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(window.sentences.len());
@@ -305,13 +313,20 @@ impl WordPredictor {
         }
         let tgt_flags =
             crate::window::target_sentence_flags(&window.doc_id, window.sentences.len());
-        let sids: Vec<String> = window.sentences.iter().map(|s| strip_subdoc(&s.sid)).collect();
+        let sids: Vec<String> = window
+            .sentences
+            .iter()
+            .map(|s| strip_subdoc(&s.sid))
+            .collect();
 
         // ---- 切分 ----
         let t_chunk = std::time::Instant::now();
         let mut chunks = chunk_plain(&mut flat, &ranges, &wf_prob, &self.tables.word_features);
         if dbg4 {
-            eprintln!("      chunk_plain {:.1} ms", t_chunk.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "      chunk_plain {:.1} ms",
+                t_chunk.elapsed().as_secs_f64() * 1000.0
+            );
         }
         let t_ne = std::time::Instant::now();
 
@@ -373,7 +388,10 @@ impl WordPredictor {
         }
 
         if dbg4 {
-            eprintln!("      NE+bp_features {:.1} ms", t_ne.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "      NE+bp_features {:.1} ms",
+                t_ne.elapsed().as_secs_f64() * 1000.0
+            );
         }
         let t_dep = std::time::Instant::now();
         // ---- 依存（只作用目标句；topk+类型+成环回退）----
@@ -420,8 +438,7 @@ impl WordPredictor {
             if !tgt {
                 continue;
             }
-            let bps: Vec<&BasePhrase> =
-                chunks[si].phrases.iter().flat_map(|p| &p.bps).collect();
+            let bps: Vec<&BasePhrase> = chunks[si].phrases.iter().flat_map(|p| &p.bps).collect();
             let head_gis: Vec<usize> = bps.iter().map(|b| b.head_gi).collect();
             // 每个主辞行：先掩码，再取 topk 候选，最后做类型 argmax
             let mut dep_preds: Vec<Vec<DepCandidate>> = vec![Vec::new(); self.max_seq_length];
@@ -482,7 +499,10 @@ impl WordPredictor {
                                 .heads
                                 .dependency_type
                                 .predict_pair(&pooled[hg], &pooled[parent_gi]);
-                            cands.push(DepCandidate { parent_gi, dep_type_idx: dtype });
+                            cands.push(DepCandidate {
+                                parent_gi,
+                                dep_type_idx: dtype,
+                            });
                         }
                         (hg, cands)
                     })
@@ -502,7 +522,10 @@ impl WordPredictor {
         }
 
         if dbg4 {
-            eprintln!("      dependency {:.1} ms", t_dep.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "      dependency {:.1} ms",
+                t_dep.elapsed().as_secs_f64() * 1000.0
+            );
         }
         // ---- cohesion / discourse 的投影（已在上面与 dep_proj 一并装配）----
 
@@ -513,19 +536,26 @@ impl WordPredictor {
         }
 
         if dbg4 {
-            eprintln!("      projections {:.1} ms", t_proj.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "      projections {:.1} ms",
+                t_proj.elapsed().as_secs_f64() * 1000.0
+            );
         }
         Ok((
-            WinKeep { chunks, sids, ranges },
+            WinKeep {
+                chunks,
+                sids,
+                ranges,
+            },
             WinBig {
                 flat,
                 tgt_flags,
                 dep,
                 cohesion_proj: Some(cohesion_proj),
                 discourse_proj: Some(discourse_proj),
-            // cohesion 的 special 候选列不含 [ROOT]：
-            //   [ROOT] 是依存树的虚拟根，不参与指代消解。多给一列会让 argmax
-            //   落到一个本不该存在的候选上，整章 rel 全错。
+                // cohesion 的 special 候选列不含 [ROOT]：
+                //   [ROOT] 是依存树的虚拟根，不参与指代消解。多给一列会让 argmax
+                //   落到一个本不该存在的候选上，整章 rel 全错。
                 cohesion_special_indices: self
                     .tables
                     .dataset_special_tokens()

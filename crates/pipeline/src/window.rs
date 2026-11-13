@@ -150,7 +150,9 @@ pub fn target_sentence_flags(doc_id: &str, n_sentences: usize) -> Vec<bool> {
     match sub_doc_pattern().captures(doc_id) {
         Some(caps) => {
             let stride: usize = caps[2].parse().expect("stride 应为非负整数");
-            (0..n_sentences).map(|i| i + stride >= n_sentences).collect()
+            (0..n_sentences)
+                .map(|i| i + stride >= n_sentences)
+                .collect()
         }
         None => vec![true; n_sentences],
     }

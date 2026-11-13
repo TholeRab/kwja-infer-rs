@@ -20,9 +20,5 @@ pub fn translate(c: char) -> Option<char> {
             return Some(to);
         }
     }
-    if is_deleted(c) {
-        None
-    } else {
-        Some(c)
-    }
+    if is_deleted(c) { None } else { Some(c) }
 }

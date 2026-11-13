@@ -22,8 +22,7 @@ fn norm_op_loose_branch_matches_python() {
             .map(|v| v.as_str().unwrap())
             .collect();
         let expected = case["expected"].as_str().unwrap();
-        let got = get_normalized_surf(surf, &tags, false)
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let got = get_normalized_surf(surf, &tags, false).unwrap_or_else(|e| panic!("{name}: {e}"));
         assert_eq!(got, expected, "case={name}");
     }
 }
@@ -31,11 +30,20 @@ fn norm_op_loose_branch_matches_python() {
 #[test]
 fn strict_branch_matches_python() {
     // 合法组合：strict 与 loose 同结果
-    assert_eq!(get_normalized_surf("かー", &["K", "P"], true).unwrap(), "かあ");
-    assert_eq!(get_normalized_surf("けー", &["K", "E"], true).unwrap(), "けえ");
+    assert_eq!(
+        get_normalized_surf("かー", &["K", "P"], true).unwrap(),
+        "かあ"
+    );
+    assert_eq!(
+        get_normalized_surf("けー", &["K", "E"], true).unwrap(),
+        "けえ"
+    );
     assert_eq!(get_normalized_surf("が", &["V"], true).unwrap(), "か");
     assert_eq!(get_normalized_surf("ぁ", &["S"], true).unwrap(), "あ");
-    assert_eq!(get_normalized_surf("あー", &["K", "D"], true).unwrap(), "あ");
+    assert_eq!(
+        get_normalized_surf("あー", &["K", "D"], true).unwrap(),
+        "あ"
+    );
     // あ 不在 PROLONGED_MAP：strict 报错，宽松保留
     assert!(get_normalized_surf("あー", &["K", "P"], true).is_err());
     // 非法组合：strict 必须 Err（对应 Python raise ValueError）

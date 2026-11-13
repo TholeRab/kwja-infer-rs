@@ -1,10 +1,10 @@
+use super::build_relative_position;
 use super::config::Config;
 use super::conv::ConvLayer;
 use super::layer::DebertaV2Layer;
-use super::build_relative_position;
 
-use candle::{bail, Context, Device, Module, Result, Tensor, D};
-use candle_nn::{embedding, layer_norm, Embedding, LayerNorm, VarBuilder};
+use candle::{Context, D, Device, Module, Result, Tensor, bail};
+use candle_nn::{Embedding, LayerNorm, VarBuilder, embedding, layer_norm};
 
 pub struct DebertaV2Encoder {
     layer: Vec<DebertaV2Layer>,
@@ -103,8 +103,12 @@ impl DebertaV2Encoder {
 
         let attention_mask = self.get_attention_mask(attention_mask.clone())?;
 
-        let relative_pos =
-            self.get_rel_pos(hidden_states, query_states, relative_pos, special_token_indices)?;
+        let relative_pos = self.get_rel_pos(
+            hidden_states,
+            query_states,
+            relative_pos,
+            special_token_indices,
+        )?;
 
         let mut next_kv: Tensor = hidden_states.clone();
         let rel_embeddings = self.get_rel_embedding()?;
@@ -193,7 +197,10 @@ impl DebertaV2Encoder {
                 let col_special = specials
                     .unsqueeze(1)? // (b,1,7)
                     .broadcast_as((batch, k, 7))?
-                    .eq(&k_ids.unsqueeze(0)?.unsqueeze(2)?.broadcast_as((batch, k, 7))?)? // (b,k,7)
+                    .eq(&k_ids
+                        .unsqueeze(0)?
+                        .unsqueeze(2)?
+                        .broadcast_as((batch, k, 7))?)? // (b,k,7)
                     .sum(2)? // (b,k)
                     .unsqueeze(2)? // (b,k,1)
                     .transpose(1, 2)?; // (b,1,k)

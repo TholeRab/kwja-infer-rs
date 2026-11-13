@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use kwja_encoder::ort_backend::Device;
-use kwja_encoder::{make_backend, Encoder};
+use kwja_encoder::{Encoder, make_backend};
 use kwja_pipeline::word_predict::WordPredictor;
 
 /// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
@@ -107,18 +107,15 @@ fn assert_bytes_equal(got: &str, expected: &str, what: &str) {
 fn run_case(char_fixture: &str, knp_fixture: &str, what: &str) {
     let char_text =
         std::fs::read_to_string(fixtures_dir().join(char_fixture)).expect("char fixture 缺失");
-    let expected =
-        std::fs::read_to_string(fixtures_dir().join(knp_fixture)).expect("KNP 基线缺失");
+    let expected = std::fs::read_to_string(fixtures_dir().join(knp_fixture)).expect("KNP 基线缺失");
     let mut predictor = predictor();
     let mut encoder = backend();
     let got = predictor
         .predict_text(encoder.as_mut(), &char_text)
         .expect("word 阶段推理失败");
     // 实际输出落盘，便于 diff 定位（失败与成功都留档）
-    let dump = std::env::temp_dir().join(format!(
-        "kwja_got_{}",
-        knp_fixture.replace(".txt", ".knp")
-    ));
+    let dump =
+        std::env::temp_dir().join(format!("kwja_got_{}", knp_fixture.replace(".txt", ".knp")));
     std::fs::write(&dump, &got).expect("实际输出写盘失败");
     eprintln!("实际输出 → {}", dump.display());
     assert_bytes_equal(&got, &expected, what);

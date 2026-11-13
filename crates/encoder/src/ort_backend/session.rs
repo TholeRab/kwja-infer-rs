@@ -41,10 +41,7 @@ fn ort_dll_path() -> std::path::PathBuf {
     }
     // 运行期：分配后的 exe 旁边，或往上若干级
     if let Ok(exe) = std::env::current_exe() {
-        let found = exe
-            .ancestors()
-            .map(|a| a.join(REL))
-            .find(|p| p.is_file());
+        let found = exe.ancestors().map(|a| a.join(REL)).find(|p| p.is_file());
         if let Some(p) = found {
             return p;
         }
@@ -90,10 +87,7 @@ fn cuda_dll_dir() -> std::path::PathBuf {
         return p;
     }
     if let Ok(exe) = std::env::current_exe() {
-        let found = exe
-            .ancestors()
-            .map(|a| a.join(REL))
-            .find(|p| p.is_dir());
+        let found = exe.ancestors().map(|a| a.join(REL)).find(|p| p.is_dir());
         if let Some(p) = found {
             return p;
         }
@@ -110,7 +104,10 @@ fn preload_cuda_dlls() {
         let path = dir.join(name);
         match unsafe { libloading::Library::new(&path) } {
             Ok(lib) => std::mem::forget(lib), // 常驻进程，供 ORT 按名解析
-            Err(e) => eprintln!("警告：预载 {} 失败（{e}），CUDA EP 可能回落 CPU", path.display()),
+            Err(e) => eprintln!(
+                "警告：预载 {} 失败（{e}），CUDA EP 可能回落 CPU",
+                path.display()
+            ),
         }
     }
 }
@@ -227,9 +224,8 @@ impl Encoder for OrtBackend {
 }
 
 fn to_array2(data: &[i64], rows: usize, cols: usize) -> Result<Array2<i64>, EncoderError> {
-    Array2::from_shape_vec((rows, cols), data.to_vec()).map_err(|e| {
-        EncoderError::Shape(format!("输入应为 ({rows},{cols})，长度或形状不符：{e}"))
-    })
+    Array2::from_shape_vec((rows, cols), data.to_vec())
+        .map_err(|e| EncoderError::Shape(format!("输入应为 ({rows},{cols})，长度或形状不符：{e}")))
 }
 
 fn extract_tensor3d(

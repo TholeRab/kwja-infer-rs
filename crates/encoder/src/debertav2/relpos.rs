@@ -1,4 +1,4 @@
-use candle::{DType, Device, Result, Tensor, D};
+use candle::{D, DType, Device, Result, Tensor};
 
 pub(crate) fn build_relative_position(
     query_size: usize,

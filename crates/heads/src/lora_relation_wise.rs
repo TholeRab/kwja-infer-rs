@@ -11,7 +11,11 @@
 #[must_use]
 pub fn topk_indices(row: &[f32], k: usize) -> Vec<usize> {
     let mut order: Vec<usize> = (0..row.len()).collect();
-    order.sort_by(|&a, &b| row[b].partial_cmp(&row[a]).unwrap_or(std::cmp::Ordering::Equal));
+    order.sort_by(|&a, &b| {
+        row[b]
+            .partial_cmp(&row[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     order.truncate(k);
     order
 }
@@ -39,7 +43,11 @@ pub fn discourse_decode(
         .map(|matrix| {
             matrix
                 .iter()
-                .map(|rows| rows.iter().map(|row| decode_row(row, threshold, none_index)).collect())
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| decode_row(row, threshold, none_index))
+                        .collect()
+                })
                 .collect()
         })
         .collect()

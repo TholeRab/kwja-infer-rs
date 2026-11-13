@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use candle::{bail, Context, Device, Module, Result, Tensor};
+use candle::{Context, Device, Module, Result, Tensor, bail};
 use candle_nn::VarBuilder;
 
 use super::config::{Config, Id2Label};
@@ -32,15 +32,19 @@ pub struct DebertaV2NERModel {
 
 fn id2label_len(config: &Config, id2label: Option<HashMap<u32, String>>) -> Result<usize> {
     let id2label_len = match (&config.id2label, id2label) {
-        (None, None) => bail!("Id2Label is either not present in the model configuration or not passed into DebertaV2NERModel::load as a parameter"),
+        (None, None) => bail!(
+            "Id2Label is either not present in the model configuration or not passed into DebertaV2NERModel::load as a parameter"
+        ),
         (None, Some(id2label_p)) => id2label_p.len(),
         (Some(id2label_c), None) => id2label_c.len(),
         (Some(id2label_c), Some(id2label_p)) => {
-          if *id2label_c == id2label_p {
-            id2label_c.len()
-          } else {
-            bail!("Id2Label is both present in the model configuration and provided as a parameter, and they are different.")
-          }
+            if *id2label_c == id2label_p {
+                id2label_c.len()
+            } else {
+                bail!(
+                    "Id2Label is both present in the model configuration and provided as a parameter, and they are different."
+                )
+            }
         }
     };
     Ok(id2label_len)
@@ -115,9 +119,9 @@ impl DebertaV2SeqClassificationModel {
         token_type_ids: Option<Tensor>,
         attention_mask: Option<Tensor>,
     ) -> Result<Tensor> {
-        let encoder_layer = self
-            .deberta
-            .forward(input_ids, token_type_ids, attention_mask, None)?;
+        let encoder_layer =
+            self.deberta
+                .forward(input_ids, token_type_ids, attention_mask, None)?;
         let pooled_output = self.pooler.forward(&encoder_layer)?;
         let pooled_output = self.dropout.forward(&pooled_output)?;
         self.classifier.forward(&pooled_output)

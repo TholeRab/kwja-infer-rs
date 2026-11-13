@@ -22,9 +22,15 @@ fn parse_sentence_reads_sid_and_surfs() {
 
 #[test]
 fn surf_of_line_handles_leading_space_surf() {
-    assert_eq!(surf_of_line("␣ _ ␣ 未定義語 15 その他 1 * 0 * 0").unwrap(), "␣");
+    assert_eq!(
+        surf_of_line("␣ _ ␣ 未定義語 15 その他 1 * 0 * 0").unwrap(),
+        "␣"
+    );
     // surf 为半角空格时，行首是空格：` [^ ]*` 分支
-    assert_eq!(surf_of_line("  _   未定義語 15 その他 1 * 0 * 0").unwrap(), " ");
+    assert_eq!(
+        surf_of_line("  _   未定義語 15 その他 1 * 0 * 0").unwrap(),
+        " "
+    );
 }
 
 #[test]

@@ -18,12 +18,15 @@ impl Jinf {
             std::fs::read_to_string(dict_dir.join(name)).map_err(|e| format!("读 {name} 失败：{e}"))
         };
         let dict: HashMap<String, HashMap<String, String>> =
-            serde_json::from_str(&read("jinf.json")?).map_err(|e| format!("jinf.json 解析失败：{e}"))?;
-        let e_basic_stem_suffix_dict: HashMap<String, String> = serde_json::from_str(
-            &read("e_basic_stem_suffix.json")?,
-        )
-        .map_err(|e| format!("e_basic_stem_suffix.json 解析失败：{e}"))?;
-        Ok(Self { dict, e_basic_stem_suffix_dict })
+            serde_json::from_str(&read("jinf.json")?)
+                .map_err(|e| format!("jinf.json 解析失败：{e}"))?;
+        let e_basic_stem_suffix_dict: HashMap<String, String> =
+            serde_json::from_str(&read("e_basic_stem_suffix.json")?)
+                .map_err(|e| format!("e_basic_stem_suffix.json 解析失败：{e}"))?;
+        Ok(Self {
+            dict,
+            e_basic_stem_suffix_dict,
+        })
     }
 
     /// 把 text 从 source_inf_form 变换到 target_inf_form。
@@ -42,10 +45,14 @@ impl Jinf {
         }
         let table = &self.dict[inf_type];
         if !table.contains_key(source_inf_form) {
-            return Err(format!("'{source_inf_form}' is not a valid inflection form of '{inf_type}'"));
+            return Err(format!(
+                "'{source_inf_form}' is not a valid inflection form of '{inf_type}'"
+            ));
         }
         if !table.contains_key(target_inf_form) {
-            return Err(format!("'{target_inf_form}' is not a valid inflection form of '{inf_type}'"));
+            return Err(format!(
+                "'{target_inf_form}' is not a valid inflection form of '{inf_type}'"
+            ));
         }
 
         let stem = if source_inf_form == "エ基本形" {
@@ -57,7 +64,9 @@ impl Jinf {
             } else if text.ends_with(inf.as_str()) {
                 text[..text.len() - inf.len()].to_string()
             } else {
-                return Err(format!("'{text}' is not in the '{source_inf_form}' form of '{inf_type}'"));
+                return Err(format!(
+                    "'{text}' is not in the '{source_inf_form}' form of '{inf_type}'"
+                ));
             }
         };
 

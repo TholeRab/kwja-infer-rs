@@ -1,8 +1,8 @@
 use super::config::Config;
 use super::layers::StableDropout;
 
-use candle::{bail, DType, Device, Module, Result, Tensor};
-use candle_nn::{embedding, layer_norm, Embedding, LayerNorm, VarBuilder};
+use candle::{DType, Device, Module, Result, Tensor, bail};
+use candle_nn::{Embedding, LayerNorm, VarBuilder, embedding, layer_norm};
 
 pub struct DebertaV2Embeddings {
     device: Device,

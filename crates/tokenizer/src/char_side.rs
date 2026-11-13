@@ -50,7 +50,12 @@ impl CharTokenizer {
         let vocab: HashMap<String, u32> = content
             .split_inclusive('\n')
             .enumerate()
-            .map(|(i, line)| (line.strip_suffix('\n').unwrap_or(line).to_string(), i as u32))
+            .map(|(i, line)| {
+                (
+                    line.strip_suffix('\n').unwrap_or(line).to_string(),
+                    i as u32,
+                )
+            })
             .collect();
         let get = |t: &str| vocab.get(t).copied();
         let pad_id = get("[PAD]").ok_or("vocab.txt 里没有 [PAD]")?;

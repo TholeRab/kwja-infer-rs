@@ -43,7 +43,9 @@ impl WordPredictor {
             .and_then(|v| v.parse().ok())
             .filter(|&b| b > 0)
             .unwrap_or(4);
-        let valid: Vec<usize> = (0..windows.len()).filter(|&i| encodings[i].is_some()).collect();
+        let valid: Vec<usize> = (0..windows.len())
+            .filter(|&i| encodings[i].is_some())
+            .collect();
         let mut hiddens: Vec<ndarray::Array3<f32>> = Vec::with_capacity(valid.len());
         for group in valid.chunks(batch_size) {
             let batch = group.len();
@@ -70,11 +72,13 @@ impl WordPredictor {
             let (seq, hid) = (shape[1], shape[2]);
             let flat = hidden.as_slice().expect("encoder 输出应连续").to_vec();
             for k in 0..batch {
-                hiddens.push(ndarray::Array3::from_shape_vec(
-                    (1, seq, hid),
-                    flat[k * seq * hid..(k + 1) * seq * hid].to_vec()
-                )
-                .map_err(|e| format!("批输出切分失败：{e}"))?);
+                hiddens.push(
+                    ndarray::Array3::from_shape_vec(
+                        (1, seq, hid),
+                        flat[k * seq * hid..(k + 1) * seq * hid].to_vec(),
+                    )
+                    .map_err(|e| format!("批输出切分失败：{e}"))?,
+                );
             }
         }
         let mut hidden_iter = hiddens.into_iter();
@@ -85,7 +89,7 @@ impl WordPredictor {
                     let hidden = hidden_iter.next().expect("hiddens 与有效窗等长");
                     preps.push(Some(WindowPrep { encoding, hidden }));
                 }
-                None => preps.push(None)
+                None => preps.push(None),
             }
         }
         Ok(preps)

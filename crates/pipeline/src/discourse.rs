@@ -19,11 +19,7 @@ fn decode_pair(logits: &[f32], none_index: usize, threshold: f32) -> usize {
             best = i;
         }
     }
-    if best_p < threshold {
-        none_index
-    } else {
-        best
-    }
+    if best_p < threshold { none_index } else { best }
 }
 
 /// 逐节对解码談話関係，返回（节下标, 关系串）列表。

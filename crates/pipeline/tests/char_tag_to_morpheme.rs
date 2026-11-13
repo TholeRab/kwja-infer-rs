@@ -97,7 +97,10 @@ fn char_tags_end_to_end_match_python() {
         let mut juman = String::new();
         for (offset, ms) in morphemes.iter().enumerate() {
             juman.push_str(&sentence_jumanpp(
-                &format!("# S-ID:{doc_id}-{} kwja:{kwja_version}", start_sid + offset as u64),
+                &format!(
+                    "# S-ID:{doc_id}-{} kwja:{kwja_version}",
+                    start_sid + offset as u64
+                ),
                 ms,
             ));
         }

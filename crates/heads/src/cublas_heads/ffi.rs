@@ -21,14 +21,31 @@ pub(super) type FnSetDevice = unsafe extern "system" fn(i32) -> i32;
 // cublas 符号
 pub(super) type FnBlasCreate = unsafe extern "system" fn(*mut Ptr) -> i32;
 pub(super) type FnSgemm = unsafe extern "system" fn(
-    Ptr, i32, i32, i32, i32, i32,
-    *const c_void, *const c_void, i32,
-    *const c_void, i32,
-    *const c_void, *const c_void, i32,
+    Ptr,
+    i32,
+    i32,
+    i32,
+    i32,
+    i32,
+    *const c_void,
+    *const c_void,
+    i32,
+    *const c_void,
+    i32,
+    *const c_void,
+    *const c_void,
+    i32,
 ) -> i32;
 
 // nvrtc 符号
-pub(super) type FnNvrtcCreate = unsafe extern "system" fn(*mut Ptr, *const c_char, *const c_char, i32, *const *const c_char, *const *const c_char) -> i32;
+pub(super) type FnNvrtcCreate = unsafe extern "system" fn(
+    *mut Ptr,
+    *const c_char,
+    *const c_char,
+    i32,
+    *const *const c_char,
+    *const *const c_char,
+) -> i32;
 pub(super) type FnNvrtcCompile = unsafe extern "system" fn(Ptr, i32, *const *const c_char) -> i32;
 pub(super) type FnNvrtcPtxSize = unsafe extern "system" fn(Ptr, *mut usize) -> i32;
 pub(super) type FnNvrtcPtx = unsafe extern "system" fn(Ptr, *mut c_char) -> i32;
@@ -45,7 +62,17 @@ pub(super) type FnCuCtxSetCurrent = unsafe extern "system" fn(Ptr) -> i32;
 pub(super) type FnCuModuleLoad = unsafe extern "system" fn(*mut Ptr, *const c_void) -> i32;
 pub(super) type FnCuGetFunction = unsafe extern "system" fn(*mut Ptr, Ptr, *const c_char) -> i32;
 pub(super) type FnCuLaunch = unsafe extern "system" fn(
-    Ptr, u32, u32, u32, u32, u32, u32, u32, Ptr, *mut *mut c_void, *mut *mut c_void,
+    Ptr,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    u32,
+    Ptr,
+    *mut *mut c_void,
+    *mut *mut c_void,
 ) -> i32;
 
 unsafe extern "system" {

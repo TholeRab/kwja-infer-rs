@@ -1,7 +1,7 @@
 //! relation-wise 头（cohesion）的投影与按行、批量计算。
 
 use super::lora::LoraDelta;
-use super::ops::{gelu, Linear};
+use super::ops::{Linear, gelu};
 use super::safetensors::WeightFile;
 
 /// `LoRARelationWiseWordSelectionHead` 的投影结果（delta 已并入 source/target）。
@@ -74,7 +74,10 @@ impl RelationWiseProjection {
         let n_rows = self.target.len() / (self.rels * self.hid);
         for &i in rows {
             for &j in cols {
-                assert!(i < n_rows && j < n_rows, "cohesion 下标越界（行 {i} 列 {j}，共 {n_rows}）");
+                assert!(
+                    i < n_rows && j < n_rows,
+                    "cohesion 下标越界（行 {i} 列 {j}，共 {n_rows}）"
+                );
             }
         }
         let mut out = Vec::with_capacity(rows.len());
@@ -117,7 +120,15 @@ impl LoraRelationWiseHead {
         let shape = w.shape(&format!("{prefix}.classifier"));
         let hid = shape[0];
         let rels = shape[1];
-        Self { l_source, l_target, delta_source, delta_target, classifier, rels, hid }
+        Self {
+            l_source,
+            l_target,
+            delta_source,
+            delta_target,
+            classifier,
+            rels,
+            hid,
+        }
     }
 
     /// `source = h_source + delta_source_out`、`target = h_target + delta_target_out`，
@@ -143,7 +154,12 @@ impl LoraRelationWiseHead {
                 }
             }
         }
-        RelationWiseProjection { source, target, classifier: self.classifier.clone(), rels: self.rels, hid: self.hid }
+        RelationWiseProjection {
+            source,
+            target,
+            classifier: self.classifier.clone(),
+            rels: self.rels,
+            hid: self.hid,
+        }
     }
 }
-

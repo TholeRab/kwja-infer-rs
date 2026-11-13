@@ -81,7 +81,8 @@ fn run() -> anyhow::Result<()> {
             match kwja_heads::cublas_heads::CublasHeads::load(&models) {
                 Ok(Some(gpu)) => {
                     eprintln!("头前向：cuBLAS 直调（models/cublas 权重）");
-                    predictor.set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Cublas(gpu)));
+                    predictor
+                        .set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Cublas(gpu)));
                 }
                 Ok(None) => eprintln!("头前向：未找到 models/cublas 权重，留在 CPU"),
                 Err(e) => return Err(anyhow::anyhow!("加载 cuBLAS 权重失败：{e}")),
@@ -90,7 +91,8 @@ fn run() -> anyhow::Result<()> {
             match kwja_heads::gpu_heads::GpuHeads::load(&models, device) {
                 Ok(Some(gpu)) => {
                     eprintln!("头前向：ORT CUDA（heads_fused.onnx + dep_type.onnx）");
-                    predictor.set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Ort(gpu)));
+                    predictor
+                        .set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Ort(gpu)));
                 }
                 Ok(None) => eprintln!("头前向：未找到 heads_fused.onnx / dep_type.onnx，留在 CPU"),
                 Err(e) => return Err(anyhow::anyhow!("加载头 ONNX 失败：{e}")),
@@ -103,7 +105,10 @@ fn run() -> anyhow::Result<()> {
     // 按 EOD 切章再逐章归一化（strip 后等于 "EOD" 的行分块）。Python 侧的写入口径是
     // `normalize_text(章文本) + "\nEOD\n"`——归一化落在章内，EOD 行不动，
     // 所以这里也必须先切块、后归一化，不能整文件一起归一化。
-    let texts: Vec<String> = split_by_eod(&raw).iter().map(|t| normalize_text(t)).collect();
+    let texts: Vec<String> = split_by_eod(&raw)
+        .iter()
+        .map(|t| normalize_text(t))
+        .collect();
 
     let started = std::time::Instant::now();
     let jumanpp = char_stage

@@ -4,8 +4,8 @@
 //! 3) 12 线程内核串行 4 窗（窗内并行，tract multithread-mm）；4) 12 线程内核并发 12 窗。
 //! 用法：KWJA_BACKEND=tract cargo run --release -p kwja-encoder --example tract_bench
 
-use kwja_encoder::{make_backend, ParallelEncoder, WordEncoderInput};
-use tract_linalg::multithread::{set_default_executor, Executor};
+use kwja_encoder::{ParallelEncoder, WordEncoderInput, make_backend};
+use tract_linalg::multithread::{Executor, set_default_executor};
 
 fn fake_input() -> WordEncoderInput {
     let seq = 256usize;
@@ -29,10 +29,20 @@ fn timed(label: &str, rounds: usize, par: &dyn ParallelEncoder, input: &WordEnco
     for _ in 0..rounds {
         par.run_word_shared(input).expect("前向失败");
     }
-    println!("{label}：{} 窗共 {:?}（均 {:?}/窗）", rounds, t.elapsed(), t.elapsed() / rounds as u32);
+    println!(
+        "{label}：{} 窗共 {:?}（均 {:?}/窗）",
+        rounds,
+        t.elapsed(),
+        t.elapsed() / rounds as u32
+    );
 }
 
-fn timed_concurrent(label: &str, threads: usize, par: &dyn ParallelEncoder, input: &WordEncoderInput) {
+fn timed_concurrent(
+    label: &str,
+    threads: usize,
+    par: &dyn ParallelEncoder,
+    input: &WordEncoderInput,
+) {
     let t = std::time::Instant::now();
     std::thread::scope(|scope| {
         let handles: Vec<_> = (0..threads)
@@ -65,5 +75,10 @@ fn main() {
     set_default_executor(Executor::multithread(12));
     timed("③ 12 线程内核·串行", 4, par, &input);
     timed_concurrent("④ 12 线程内核", 12, par, &input);
-    println!("物理核数 = {}", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0));
+    println!(
+        "物理核数 = {}",
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0)
+    );
 }

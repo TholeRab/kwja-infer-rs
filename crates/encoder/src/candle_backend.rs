@@ -43,10 +43,10 @@ fn load_head(
     hidden: usize,
     labels: usize,
 ) -> Result<(candle_nn::Linear, candle_nn::Linear), EncoderError> {
-    let first = candle_nn::linear(hidden, hidden, vb.pp(format!("{name}.0")))
-        .map_err(candle_err(name))?;
-    let second = candle_nn::linear(hidden, labels, vb.pp(format!("{name}.3")))
-        .map_err(candle_err(name))?;
+    let first =
+        candle_nn::linear(hidden, hidden, vb.pp(format!("{name}.0"))).map_err(candle_err(name))?;
+    let second =
+        candle_nn::linear(hidden, labels, vb.pp(format!("{name}.3"))).map_err(candle_err(name))?;
     Ok((first, second))
 }
 
@@ -71,7 +71,13 @@ fn i64_tensor(data: &[i64], dims: (usize, usize), device: &Device) -> Result<Ten
         .map_err(|e| EncoderError::Shape(format!("输入张量 {dims:?} 创建失败：{e:?}")))
 }
 
-fn to_array3(tensor: Tensor, name: &str, d0: usize, d1: usize, d2: usize) -> Result<Array3<f32>, EncoderError> {
+fn to_array3(
+    tensor: Tensor,
+    name: &str,
+    d0: usize,
+    d1: usize,
+    d2: usize,
+) -> Result<Array3<f32>, EncoderError> {
     let shape = tensor.shape();
     if shape.dims() != [d0, d1, d2] {
         return Err(EncoderError::Shape(format!(
@@ -91,7 +97,11 @@ fn snapshot_config(hub: &Path, model_dir_name: &str) -> Result<PathBuf, EncoderE
     let snapshots = hub.join(model_dir_name).join("snapshots");
     let mut entries = std::fs::read_dir(&snapshots)
         .map_err(|e| EncoderError::Session(format!("读 {} 失败：{e}", snapshots.display())))?;
-    while let Some(entry) = entries.next().transpose().map_err(|e| EncoderError::Session(format!("{e}")))? {
+    while let Some(entry) = entries
+        .next()
+        .transpose()
+        .map_err(|e| EncoderError::Session(format!("{e}")))?
+    {
         let candidate = entry.path().join("config.json");
         if candidate.exists() {
             return Ok(candidate);
@@ -115,8 +125,9 @@ fn load_model(
     config_path: &Path,
     device: &Device,
 ) -> Result<DebertaV2Model, EncoderError> {
-    let tensors = candle::safetensors::load(safetensors_path, device)
-        .map_err(|e| EncoderError::Session(format!("加载 {} 失败：{e:?}", safetensors_path.display())))?;
+    let tensors = candle::safetensors::load(safetensors_path, device).map_err(|e| {
+        EncoderError::Session(format!("加载 {} 失败：{e:?}", safetensors_path.display()))
+    })?;
     // 对应 PyTorch 侧的 resize_token_embeddings(vocab + 特殊 token 数)：
     // ckpt 的词表比 config.json 大（word 从 32000 到 32008）。以实际权重为准。
     let actual_vocab = tensors
@@ -132,7 +143,10 @@ fn load_model(
         config.vocab_size = vocab;
     }
     DebertaV2Model::load(vb, &config).map_err(|e| {
-        EncoderError::Session(format!("DebertaV2Model 加载失败（{}）：{e:?}", safetensors_path.display()))
+        EncoderError::Session(format!(
+            "DebertaV2Model 加载失败（{}）：{e:?}",
+            safetensors_path.display()
+        ))
     })
 }
 
@@ -159,9 +173,12 @@ impl CandleBackend {
             .nth(3)
             .map(|p| p.join("../外部素材目录/hf/hub"))
             .unwrap_or_else(|| PathBuf::from("../外部素材目录/hf/hub"));
-        let hub = std::env::var("KWJA_HF_HUB").map(PathBuf::from).unwrap_or(hub);
+        let hub = std::env::var("KWJA_HF_HUB")
+            .map(PathBuf::from)
+            .unwrap_or(hub);
         let word_config = snapshot_config(&hub, "models--ku-nlp--deberta-v2-base-japanese")?;
-        let char_config = snapshot_config(&hub, "models--ku-nlp--deberta-v2-base-japanese-char-wwm")?;
+        let char_config =
+            snapshot_config(&hub, "models--ku-nlp--deberta-v2-base-japanese-char-wwm")?;
         Ok(Self {
             word: load_model(&word_weights, &word_config, &device)?,
             char: load_model(&char_weights, &char_config, &device)?,

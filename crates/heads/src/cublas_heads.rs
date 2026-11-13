@@ -163,7 +163,10 @@ impl CublasHeads {
         token_rows: &[Vec<f32>],
         pooled_rows: &[Vec<f32>],
     ) -> Result<FusedHeadsOutput, String> {
-        let mut g = self.inner.lock().map_err(|_| "cuBLAS 前向锁中毒".to_string())?;
+        let mut g = self
+            .inner
+            .lock()
+            .map_err(|_| "cuBLAS 前向锁中毒".to_string())?;
         g.forward_fused(token_rows, pooled_rows)
     }
 
@@ -173,8 +176,10 @@ impl CublasHeads {
         pairs: &[(usize, usize)],
         pooled: &[Vec<f32>],
     ) -> Result<Vec<usize>, String> {
-        let mut g = self.inner.lock().map_err(|_| "cuBLAS 前向锁中毒".to_string())?;
+        let mut g = self
+            .inner
+            .lock()
+            .map_err(|_| "cuBLAS 前向锁中毒".to_string())?;
         g.dep_type_argmax(pairs, pooled)
     }
 }
-

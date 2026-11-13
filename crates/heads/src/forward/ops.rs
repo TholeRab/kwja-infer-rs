@@ -36,7 +36,13 @@ impl Linear {
         }
         let weight_t = ndarray::Array2::from_shape_vec((in_features, out), weight_t_v)
             .expect("权重转置整形失败");
-        Self { weight, weight_t, bias, out, in_features }
+        Self {
+            weight,
+            weight_t,
+            bias,
+            out,
+            in_features,
+        }
     }
 
     pub(in crate::forward) fn forward_row(&self, x: &[f32]) -> Vec<f32> {
@@ -74,8 +80,7 @@ impl Linear {
         // (rows, in) · (in, out) 交给 ndarray dot（matrixmultiply 分块内核）。
         // 自研分块 GEMM 实测不快于 ndarray dot，故用 dot；
         // 权重已修成 C 连续，dot 直接受益。
-        let a = ndarray::Array2::from_shape_vec((rows, self.in_features), a)
-            .expect("输入整形失败");
+        let a = ndarray::Array2::from_shape_vec((rows, self.in_features), a).expect("输入整形失败");
         // (rows, in) · (in, out) 得 (rows, out)
         let mut y = a.dot(&self.weight_t);
         // 加 bias（原地）
@@ -84,9 +89,6 @@ impl Linear {
                 *v += self.bias[o];
             }
         }
-        y.rows()
-            .into_iter()
-            .map(|r| r.to_vec())
-            .collect()
+        y.rows().into_iter().map(|r| r.to_vec()).collect()
     }
 }

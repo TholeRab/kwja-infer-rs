@@ -50,9 +50,8 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn word_tokenizer() -> WordTokenizer {
-    let snapshots = repo_path(
-        "assets/tokenizers/models--ku-nlp--deberta-v2-base-japanese/snapshots",
-    );
+    let snapshots =
+        repo_path("assets/tokenizers/models--ku-nlp--deberta-v2-base-japanese/snapshots");
     let mut hits: Vec<PathBuf> = std::fs::read_dir(&snapshots)
         .expect("word tokenizer snapshots 目录不存在")
         .filter_map(Result::ok)
@@ -162,10 +161,15 @@ fn check(name: &str) {
     let max_token_length = max_token_length.expect("基线头部缺 max_token_length");
     let stride = stride.expect("基线头部缺 stride");
 
-    let juman_text =
-        std::fs::read_to_string(fixtures_dir().join(format!("char_stage_{name}.txt")))
-            .expect("char 产出基线缺失");
-    let produced = dump_windows(&juman_text, "doc", max_token_length, stride, &word_tokenizer());
+    let juman_text = std::fs::read_to_string(fixtures_dir().join(format!("char_stage_{name}.txt")))
+        .expect("char 产出基线缺失");
+    let produced = dump_windows(
+        &juman_text,
+        "doc",
+        max_token_length,
+        stride,
+        &word_tokenizer(),
+    );
     assert_dump_equal(&produced, &fixture, name);
 }
 

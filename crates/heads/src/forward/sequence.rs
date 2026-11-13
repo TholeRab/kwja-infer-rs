@@ -1,6 +1,6 @@
 //! 序列标注头与成对序列头（依存类型）。
 
-use super::ops::{gelu, Linear};
+use super::ops::{Linear, gelu};
 use super::safetensors::WeightFile;
 
 /// `SequenceLabelingHead`：Linear(hid, hid) + GELU + Linear(hid, labels)。
@@ -33,7 +33,6 @@ impl SequenceHead {
     }
 }
 
-
 /// `SequenceLabelingHead(hidden*2, …)`（依存类型头）：
 /// 输入是两个 hid 向量的拼接。
 #[derive(Debug, Clone)]
@@ -61,4 +60,3 @@ impl PairSequenceHead {
         crate::sequence_labeling::argmax(&logits)
     }
 }
-

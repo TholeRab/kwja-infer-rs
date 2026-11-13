@@ -18,7 +18,10 @@ pub struct DependencyManager {
 
 impl DependencyManager {
     pub fn add_edge(&mut self, source: usize, target: i32) {
-        self.directed_graph.entry(source).or_default().insert(target as usize);
+        self.directed_graph
+            .entry(source)
+            .or_default()
+            .insert(target as usize);
     }
 
     pub fn remove_edge(&mut self, source: usize, target: i32) {
@@ -27,7 +30,12 @@ impl DependencyManager {
         }
     }
 
-    fn is_cyclic(&self, source: usize, visited: &mut HashSet<usize>, cache: &mut HashMap<usize, bool>) -> bool {
+    fn is_cyclic(
+        &self,
+        source: usize,
+        visited: &mut HashSet<usize>,
+        cache: &mut HashMap<usize, bool>,
+    ) -> bool {
         if let Some(&cached) = cache.get(&source) {
             return cached;
         }

@@ -71,7 +71,11 @@ pub fn build_morpheme(surf: &str, norm: &str) -> Morpheme {
     Morpheme {
         surf: surf.to_string(),
         reading: "_".to_string(),
-        lemma: if norm.is_empty() { surf.to_string() } else { norm.to_string() },
+        lemma: if norm.is_empty() {
+            surf.to_string()
+        } else {
+            norm.to_string()
+        },
         pos: "未定義語",
         pos_id: 15,
         subpos: "その他",

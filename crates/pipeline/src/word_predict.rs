@@ -21,11 +21,11 @@ use kwja_tokenizer::word_side::WordTokenizer;
 
 use crate::jinf::Jinf;
 use crate::jumandic::JumanDic;
-use crate::word_stage::{parse_jumanpp_documents_by_doc, split_flat_word_document, WordWindow};
-use crate::word_tables::WordTables;
 use crate::word_decode::{WinBig, WinKeep};
-use crate::word_merge::{absorb_one, register_owner, AbsorbedWin, Buffer};
 use crate::word_encode::WindowPrep;
+use crate::word_merge::{AbsorbedWin, Buffer, absorb_one, register_owner};
+use crate::word_stage::{WordWindow, parse_jumanpp_documents_by_doc, split_flat_word_document};
+use crate::word_tables::WordTables;
 
 /// word 阶段推理器。编码器按调用传入（与 char_stage 同风格）。
 pub struct WordPredictor {
@@ -145,9 +145,8 @@ impl WordPredictor {
                 &[WordWindow],
                 Result<Vec<Option<WindowPrep>>, String>,
             )>(1);
-            let (dec_tx, dec_rx) = std::sync::mpsc::sync_channel::<
-                Result<Vec<Option<(WinKeep, WinBig)>>, String>,
-            >(1);
+            let (dec_tx, dec_rx) =
+                std::sync::mpsc::sync_channel::<Result<Vec<Option<(WinKeep, WinBig)>>, String>>(1);
             let encoder: &mut dyn Encoder = &mut *encoder;
             let prep_ms = prep_ms.clone();
             // 编码线程：独占型后端（ORT session，&mut）逐段串行；共享型后端
@@ -206,13 +205,21 @@ impl WordPredictor {
             // 主线程做合并：段 N 合并与段 N+1 解码、段 N+2 编码重叠。
             // owner/order 仍按段序登记（首窗定稿），结果按窗序写入，逐字节结果不变。
             for _ in 0..chunks.len() {
-                let outs = dec_rx.recv().map_err(|_| "解码线程意外退出".to_string())??;
+                let outs = dec_rx
+                    .recv()
+                    .map_err(|_| "解码线程意外退出".to_string())??;
                 let t = std::time::Instant::now();
                 let mut jobs: Vec<(usize, &WinKeep, &WinBig)> = Vec::new();
                 for out in outs.iter().flatten() {
                     let (keep, big) = out;
                     let win = keeps.len();
-                    register_owner(win, &keep.sids, &big.tgt_flags, &mut buf.owner, &mut buf.order);
+                    register_owner(
+                        win,
+                        &keep.sids,
+                        &big.tgt_flags,
+                        &mut buf.owner,
+                        &mut buf.order,
+                    );
                     keeps.push(WinKeep {
                         chunks: keep.chunks.clone(),
                         sids: keep.sids.clone(),
@@ -253,8 +260,6 @@ impl WordPredictor {
         }
         Ok(rendered)
     }
-
-
 }
 
 /// tokenizer.json 定位（snapshot 目录唯一）。

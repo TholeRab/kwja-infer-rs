@@ -12,8 +12,12 @@ fn main() -> Result<(), String> {
     let g = GpuHeads::load(models, Device::Cuda)?.ok_or("模型缺失")?;
     // 典型 3 章窗：token 数与词素数取中位偏上；最坏档另测
     let (t_n, m_n) = (224usize, 176usize);
-    let t: Vec<Vec<f32>> = (0..t_n).map(|i| vec![0.001f32 * (i % 7) as f32; 768]).collect();
-    let p: Vec<Vec<f32>> = (0..m_n).map(|i| vec![0.002f32 * (i % 5) as f32; 768]).collect();
+    let t: Vec<Vec<f32>> = (0..t_n)
+        .map(|i| vec![0.001f32 * (i % 7) as f32; 768])
+        .collect();
+    let p: Vec<Vec<f32>> = (0..m_n)
+        .map(|i| vec![0.002f32 * (i % 5) as f32; 768])
+        .collect();
     println!("形状 T={t_n} M={m_n}");
     for b in [1usize, 2, 4, 8, 16] {
         let wins: Vec<(&[Vec<f32>], &[Vec<f32>])> = vec![(&t, &p); b];

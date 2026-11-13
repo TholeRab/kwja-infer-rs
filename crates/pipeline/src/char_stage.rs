@@ -37,11 +37,8 @@ pub struct CharStage {
 
 impl CharStage {
     pub fn new(vocab_txt: impl AsRef<Path>, max_seq_length: usize) -> Result<Self, String> {
-        let tokenizer = CharTokenizer::load(
-            vocab_txt,
-            &CHAR_ADDITIONAL_SPECIAL_TOKENS,
-            max_seq_length,
-        )?;
+        let tokenizer =
+            CharTokenizer::load(vocab_txt, &CHAR_ADDITIONAL_SPECIAL_TOKENS, max_seq_length)?;
         // max_token_length = max_seq_length - len(extra_special_tokens) - 2
         // （extra 即 1 个空格 special）
         let extra_special_tokens = CHAR_ADDITIONAL_SPECIAL_TOKENS.len();
@@ -111,7 +108,9 @@ impl CharStage {
             let sent_pred: Vec<usize> = (0..seq)
                 .map(|i| {
                     crate::char_tags::argmax(
-                        logits.sent_segmentation.slice(ndarray::s![0, i, ..])
+                        logits
+                            .sent_segmentation
+                            .slice(ndarray::s![0, i, ..])
                             .as_slice()
                             .unwrap_or(&[]),
                     )
@@ -120,7 +119,9 @@ impl CharStage {
             let word_pred: Vec<usize> = (0..seq)
                 .map(|i| {
                     crate::char_tags::argmax(
-                        logits.word_segmentation.slice(ndarray::s![0, i, ..])
+                        logits
+                            .word_segmentation
+                            .slice(ndarray::s![0, i, ..])
                             .as_slice()
                             .unwrap_or(&[]),
                     )
@@ -129,7 +130,9 @@ impl CharStage {
             let norm_pred: Vec<usize> = (0..seq)
                 .map(|i| {
                     crate::char_tags::argmax(
-                        logits.word_norm_op.slice(ndarray::s![0, i, ..])
+                        logits
+                            .word_norm_op
+                            .slice(ndarray::s![0, i, ..])
                             .as_slice()
                             .unwrap_or(&[]),
                     )
@@ -218,24 +221,22 @@ pub fn split_document(text: &str) -> Vec<String> {
     }
     let mut sentences: Vec<String> = Vec::new();
     for line in text.split('\n') {
-        let mut candidates: std::collections::VecDeque<String> =
-            split_text_by_period(line).into();
+        let mut candidates: std::collections::VecDeque<String> = split_text_by_period(line).into();
         let mut parenthesis_level = 0i32;
         let mut hook_bracket_level = 0i32;
         let mut double_hook_bracket_level = 0i32;
         let mut sentence = String::new();
         while let Some(candidate) = candidates.pop_front() {
             sentence.push_str(&candidate);
-            parenthesis_level += candidate.matches('（').count() as i32
-                - candidate.matches('）').count() as i32;
-            parenthesis_level += candidate.matches('(').count() as i32
-                - candidate.matches(')').count() as i32;
-            hook_bracket_level += candidate.matches('「').count() as i32
-                - candidate.matches('」').count() as i32;
-            double_hook_bracket_level += candidate.matches('『').count() as i32
-                - candidate.matches('』').count() as i32;
-            if parenthesis_level == 0 && hook_bracket_level == 0 && double_hook_bracket_level == 0
-            {
+            parenthesis_level +=
+                candidate.matches('（').count() as i32 - candidate.matches('）').count() as i32;
+            parenthesis_level +=
+                candidate.matches('(').count() as i32 - candidate.matches(')').count() as i32;
+            hook_bracket_level +=
+                candidate.matches('「').count() as i32 - candidate.matches('」').count() as i32;
+            double_hook_bracket_level +=
+                candidate.matches('『').count() as i32 - candidate.matches('』').count() as i32;
+            if parenthesis_level == 0 && hook_bracket_level == 0 && double_hook_bracket_level == 0 {
                 if !sentence.trim().is_empty() {
                     sentences.push(sentence.trim().to_string());
                 }
@@ -259,8 +260,10 @@ fn split_flat_document(
     max_token_length: usize,
     tokenizer: &CharTokenizer,
 ) -> Vec<(String, String)> {
-    let sentence_tokens: Vec<usize> =
-        sentences.iter().map(|s| tokenizer.tokenize_len(s)).collect();
+    let sentence_tokens: Vec<usize> = sentences
+        .iter()
+        .map(|s| tokenizer.tokenize_len(s))
+        .collect();
     if sentence_tokens.iter().sum::<usize>() <= max_token_length {
         return vec![(doc_id.to_string(), doc_text.to_string())];
     }

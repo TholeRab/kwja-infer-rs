@@ -46,7 +46,12 @@ pub struct WordFeatureIdx {
 
 impl WordFeatureIdx {
     pub fn new(word_features: &[String]) -> Self {
-        let f = |name: &str| word_features.iter().position(|s| s == name).unwrap_or_else(|| panic!("WORD_FEATURES 缺 {name}"));
+        let f = |name: &str| {
+            word_features
+                .iter()
+                .position(|s| s == name)
+                .unwrap_or_else(|| panic!("WORD_FEATURES 缺 {name}"))
+        };
         Self {
             head: f("基本句-主辞"),
             bp_end: f("基本句-区切"),
@@ -145,7 +150,10 @@ pub fn head_of(flat_ms: &[FlatMorpheme], ms: &[usize]) -> usize {
 
 /// BASE_PHRASE_FEATURES 里 節-主辞 的下标（add_bp_features 用）。
 pub fn chu_index(base_phrase_features: &[String]) -> usize {
-    base_phrase_features.iter().position(|s| s == "節-主辞").expect("BASE_PHRASE_FEATURES 缺 節-主辞")
+    base_phrase_features
+        .iter()
+        .position(|s| s == "節-主辞")
+        .expect("BASE_PHRASE_FEATURES 缺 節-主辞")
 }
 
 /// 基本句素性 + 節-区切/節-主辞 标注。

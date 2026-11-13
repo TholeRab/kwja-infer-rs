@@ -57,10 +57,12 @@ pub fn make_backend(
     device: ort_backend::Device,
 ) -> Result<Box<dyn Encoder>, EncoderError> {
     match std::env::var("KWJA_BACKEND").unwrap_or_default().as_str() {
-        "candle" | "rust" => {
-            Ok(Box::new(candle_backend::CandleBackend::new(char_model, word_model)?))
-        }
-        _ => Ok(Box::new(ort_backend::OrtBackend::new(char_model, word_model, device)?)),
+        "candle" | "rust" => Ok(Box::new(candle_backend::CandleBackend::new(
+            char_model, word_model,
+        )?)),
+        _ => Ok(Box::new(ort_backend::OrtBackend::new(
+            char_model, word_model, device,
+        )?)),
     }
 }
 

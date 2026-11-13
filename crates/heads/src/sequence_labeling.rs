@@ -9,7 +9,7 @@
 //! 3. CRF 的回溯区间是 `history[head-min : tail-min][::-1]`，掩码外用 `"O"` 填充。
 
 use crate::mask_tables::{
-    CONJTYPE_CONJFORM_ALLOWED, CONJFORM_TAGS, CONJFORM_STAR_ID, CONJTYPE_STAR_INDEX, INFLECTABLE,
+    CONJFORM_STAR_ID, CONJFORM_TAGS, CONJTYPE_CONJFORM_ALLOWED, CONJTYPE_STAR_INDEX, INFLECTABLE,
     MASKED, POS_SUBPOS_ALLOWED, SUBPOS_TAGS,
 };
 
@@ -91,7 +91,12 @@ pub fn get_morpheme_attribute_predictions(
             conjform.push(CONJFORM_STAR_ID);
         }
     }
-    MorphemeAttributePredictions { pos, subpos, conjtype, conjform }
+    MorphemeAttributePredictions {
+        pos,
+        subpos,
+        conjtype,
+        conjform,
+    }
 }
 
 /// CRF 的模型参数（推理时从权重里读；这里作为纯函数的输入）。

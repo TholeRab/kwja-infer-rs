@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::chunking::{BasePhrase, Chunk, Phrase};
-use crate::cohesion::{add_cohesion, CohesionDoc, RelRow};
+use crate::cohesion::{CohesionDoc, RelRow, add_cohesion};
 use crate::discourse::add_discourse;
 use crate::knp_emit::{bp_header, feature_string, morpheme_line};
 use crate::morpheme_build::{FeatureValue, FlatMorpheme, OrderedFeats};
@@ -159,7 +159,11 @@ pub(crate) fn absorb_one(
             &|t: &str| tables.cohesion_task2rels(t),
             &|a: usize, c: usize| sent_of_morpheme[a] == sent_of_morpheme[c],
             &big.cohesion_special_indices,
-            &tables.dataset_special_tokens().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &tables
+                .dataset_special_tokens()
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
             &tables.exophora_referents,
             tables.restrict_cohesion_target,
             tables.cohesion_rels().len(),
@@ -234,7 +238,11 @@ impl Buffer {
         let mut lines: Vec<String> = Vec::new();
         for sid in &self.order {
             let w = &self.wins[self.owner[sid]];
-            let oi = w.sids.iter().position(|s| s == sid).expect("缓冲句不在原窗");
+            let oi = w
+                .sids
+                .iter()
+                .position(|s| s == sid)
+                .expect("缓冲句不在原窗");
             let ch = &w.chunks[oi];
             let (parents, dtypes) = self
                 .dep_rows

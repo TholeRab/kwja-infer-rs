@@ -88,8 +88,25 @@ fn word_ids_match_python() {
     assert!(!cases.is_empty());
     let tok = WordTokenizer::load(
         tokenizer_json("models--ku-nlp--deberta-v2-base-japanese"),
-        &["[著者]", "[読者]", "[不特定:人]", "[不特定:物]", "[NULL]", "[NA]", "[ROOT]", " "],
-        &["[著者]", "[読者]", "[不特定:人]", "[不特定:物]", "[NULL]", "[NA]", "[ROOT]"],
+        &[
+            "[著者]",
+            "[読者]",
+            "[不特定:人]",
+            "[不特定:物]",
+            "[NULL]",
+            "[NA]",
+            "[ROOT]",
+            " ",
+        ],
+        &[
+            "[著者]",
+            "[読者]",
+            "[不特定:人]",
+            "[不特定:物]",
+            "[NULL]",
+            "[NA]",
+            "[ROOT]",
+        ],
         256,
     )
     .unwrap();

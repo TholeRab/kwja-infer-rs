@@ -100,10 +100,7 @@ pub fn surf_of_line(line: &str) -> Option<String> {
     }
     if bytes[0] == b' ' {
         // ` [^ ]*`：空格后到下一个空格（或行尾）为止
-        let end = line[1..]
-            .find(' ')
-            .map(|i| i + 1)
-            .unwrap_or(line.len());
+        let end = line[1..].find(' ').map(|i| i + 1).unwrap_or(line.len());
         return Some(line[..end].to_string());
     }
     let end = line.find(' ').unwrap_or(line.len());

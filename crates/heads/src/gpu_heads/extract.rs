@@ -9,7 +9,9 @@ pub(super) fn extract_reading_argmax(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
 ) -> Result<Vec<usize>, String> {
-    let value = outputs.get(name).ok_or_else(|| format!("模型输出里没有 {name}"))?;
+    let value = outputs
+        .get(name)
+        .ok_or_else(|| format!("模型输出里没有 {name}"))?;
     let (shape, data) = value
         .try_extract_tensor::<f32>()
         .map_err(|e| format!("输出 {name} 提取失败：{e}"))?;
@@ -20,7 +22,10 @@ pub(super) fn extract_reading_argmax(
         other => return Err(format!("{name} 形状应为 [n,c] 或 [1,n,c]，实际 {other:?}")),
     };
     if data.len() != n * c {
-        return Err(format!("{name} 数据长度 {} 与形状 ({n},{c}) 不符", data.len()));
+        return Err(format!(
+            "{name} 数据长度 {} 与形状 ({n},{c}) 不符",
+            data.len()
+        ));
     }
     Ok(data.chunks_exact(c).map(|row| argmax(row)).collect())
 }
@@ -30,7 +35,9 @@ pub(super) fn extract_rows(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
 ) -> Result<Vec<Vec<f32>>, String> {
-    let value = outputs.get(name).ok_or_else(|| format!("模型输出里没有 {name}"))?;
+    let value = outputs
+        .get(name)
+        .ok_or_else(|| format!("模型输出里没有 {name}"))?;
     let (shape, data) = value
         .try_extract_tensor::<f32>()
         .map_err(|e| format!("输出 {name} 提取失败：{e}"))?;
@@ -41,7 +48,10 @@ pub(super) fn extract_rows(
         other => return Err(format!("{name} 形状应为 [n,c] 或 [1,n,c]，实际 {other:?}")),
     };
     if data.len() != n * c {
-        return Err(format!("{name} 数据长度 {} 与形状 ({n},{c}) 不符", data.len()));
+        return Err(format!(
+            "{name} 数据长度 {} 与形状 ({n},{c}) 不符",
+            data.len()
+        ));
     }
     Ok(data.chunks_exact(c).map(<[f32]>::to_vec).collect())
 }
@@ -51,7 +61,9 @@ pub(super) fn extract_flat(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
 ) -> Result<Vec<f32>, String> {
-    let value = outputs.get(name).ok_or_else(|| format!("模型输出里没有 {name}"))?;
+    let value = outputs
+        .get(name)
+        .ok_or_else(|| format!("模型输出里没有 {name}"))?;
     let (shape, data) = value
         .try_extract_tensor::<f32>()
         .map_err(|e| format!("输出 {name} 提取失败：{e}"))?;
@@ -67,7 +79,9 @@ fn fetch_output(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
 ) -> Result<(Vec<usize>, Vec<f32>), String> {
-    let value = outputs.get(name).ok_or_else(|| format!("模型输出里没有 {name}"))?;
+    let value = outputs
+        .get(name)
+        .ok_or_else(|| format!("模型输出里没有 {name}"))?;
     let (shape, data) = value
         .try_extract_tensor::<f32>()
         .map_err(|e| format!("输出 {name} 提取失败：{e}"))?;

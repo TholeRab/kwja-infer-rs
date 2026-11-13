@@ -153,7 +153,10 @@ fn chapter1_matches_python_byte_for_byte() {
 fn run_tier(n_chapters: usize, fixture: &str) {
     let started = std::time::Instant::now();
     let texts = corpus_texts();
-    let normalized: Vec<String> = texts[..n_chapters].iter().map(|t| normalize_text(t)).collect();
+    let normalized: Vec<String> = texts[..n_chapters]
+        .iter()
+        .map(|t| normalize_text(t))
+        .collect();
     let output = char_stage()
         .run(&normalized, Some("c"), &mut backend())
         .expect("char 阶段分级运行失败");

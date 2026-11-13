@@ -9,25 +9,101 @@ use super::{Inner, OutLayout};
 
 fn out_layout(t: usize, m: usize) -> OutLayout {
     let mut o = 0usize;
-    let rargmax = { let v = o; o += t; v };
-    let pos = { let v = o; o += m * 14; v };
-    let subpos = { let v = o; o += m * 35; v };
-    let conjtype = { let v = o; o += m * 33; v };
-    let conjform = { let v = o; o += m * 81; v };
-    let wf = { let v = o; o += m * 5; v };
-    let bpf = { let v = o; o += m * 64; v };
-    let ne = { let v = o; o += m * 17; v };
-    let dep_hs = { let v = o; o += m * 768; v };
-    let dep_ht = { let v = o; o += m * 768; v };
-    let dis_hs = { let v = o; o += m * 768; v };
-    let dis_ht = { let v = o; o += m * 768; v };
-    let coh_s = { let v = o; o += m * 6912; v };
-    let coh_t = { let v = o; o += m * 6912; v };
-    OutLayout { rargmax, pos, subpos, conjtype, conjform, wf, bpf, ne, dep_hs, dep_ht, dis_hs, dis_ht, coh_s, coh_t, total: o }
+    let rargmax = {
+        let v = o;
+        o += t;
+        v
+    };
+    let pos = {
+        let v = o;
+        o += m * 14;
+        v
+    };
+    let subpos = {
+        let v = o;
+        o += m * 35;
+        v
+    };
+    let conjtype = {
+        let v = o;
+        o += m * 33;
+        v
+    };
+    let conjform = {
+        let v = o;
+        o += m * 81;
+        v
+    };
+    let wf = {
+        let v = o;
+        o += m * 5;
+        v
+    };
+    let bpf = {
+        let v = o;
+        o += m * 64;
+        v
+    };
+    let ne = {
+        let v = o;
+        o += m * 17;
+        v
+    };
+    let dep_hs = {
+        let v = o;
+        o += m * 768;
+        v
+    };
+    let dep_ht = {
+        let v = o;
+        o += m * 768;
+        v
+    };
+    let dis_hs = {
+        let v = o;
+        o += m * 768;
+        v
+    };
+    let dis_ht = {
+        let v = o;
+        o += m * 768;
+        v
+    };
+    let coh_s = {
+        let v = o;
+        o += m * 6912;
+        v
+    };
+    let coh_t = {
+        let v = o;
+        o += m * 6912;
+        v
+    };
+    OutLayout {
+        rargmax,
+        pos,
+        subpos,
+        conjtype,
+        conjform,
+        wf,
+        bpf,
+        ne,
+        dep_hs,
+        dep_ht,
+        dis_hs,
+        dis_ht,
+        coh_s,
+        coh_t,
+        total: o,
+    }
 }
 
 impl Inner {
-pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: &[Vec<f32>]) -> Result<FusedHeadsOutput, String> {
+    pub(super) fn forward_fused(
+        &mut self,
+        token_rows: &[Vec<f32>],
+        pooled_rows: &[Vec<f32>],
+    ) -> Result<FusedHeadsOutput, String> {
         unsafe {
             // ORT 等其它 CUDA 使用方可能切换了当前上下文；cuBLAS 句柄绑定在本上下文，
             // 每次前向先归位，防止跨上下文调用产生垃圾输出。
@@ -50,7 +126,11 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
             let hidden = self.buf("hidden", t * 768 * 4)?;
             let pooled = self.buf("pooled", m * 768 * 4)?;
             self.to_device(pin_in, hidden, t * 768 * 4)?;
-            self.to_device((pin_in as *mut u8).add(t * 768 * 4) as Ptr, pooled, m * 768 * 4)?;
+            self.to_device(
+                (pin_in as *mut u8).add(t * 768 * 4) as Ptr,
+                pooled,
+                m * 768 * 4,
+            )?;
 
             // 输出缓冲：一窗一次回读，布局见 out_layout
             let outs = self.buf("outs", lay.total * 4)?;
@@ -69,7 +149,14 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
 
             // 四个小 tagger：pooled 经 Linear(768,768)+GELU+Linear(768,C)
             let tag1 = self.buf("tag1", m * 768 * 4)?;
-            let mut run_tagger = |g: &mut Self, w1n: &str, b1n: &str, w2n: &str, b2n: &str, c: usize, dst: Ptr| -> Result<(), String> {
+            let mut run_tagger = |g: &mut Self,
+                                  w1n: &str,
+                                  b1n: &str,
+                                  w2n: &str,
+                                  b2n: &str,
+                                  c: usize,
+                                  dst: Ptr|
+             -> Result<(), String> {
                 let (w1, b1) = (g.w(w1n)?, g.w(b1n)?);
                 g.gemm_nn(pooled, w1.ptr, tag1, m, 768, 768)?;
                 g.bias_gelu(tag1, b1.ptr, m * 768, 768)?;
@@ -78,13 +165,55 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
                 g.bias_add(dst, b2.ptr, m * c, c)?;
                 Ok(())
             };
-            run_tagger(self, "pos_w1", "pos_b1", "pos_w2", "pos_b2", 14, outs_f.add(lay.pos) as Ptr)?;
-            run_tagger(self, "subpos_w1", "subpos_b1", "subpos_w2", "subpos_b2", 35, outs_f.add(lay.subpos) as Ptr)?;
-            run_tagger(self, "conjtype_w1", "conjtype_b1", "conjtype_w2", "conjtype_b2", 33, outs_f.add(lay.conjtype) as Ptr)?;
-            run_tagger(self, "conjform_w1", "conjform_b1", "conjform_w2", "conjform_b2", 81, outs_f.add(lay.conjform) as Ptr)?;
+            run_tagger(
+                self,
+                "pos_w1",
+                "pos_b1",
+                "pos_w2",
+                "pos_b2",
+                14,
+                outs_f.add(lay.pos) as Ptr,
+            )?;
+            run_tagger(
+                self,
+                "subpos_w1",
+                "subpos_b1",
+                "subpos_w2",
+                "subpos_b2",
+                35,
+                outs_f.add(lay.subpos) as Ptr,
+            )?;
+            run_tagger(
+                self,
+                "conjtype_w1",
+                "conjtype_b1",
+                "conjtype_w2",
+                "conjtype_b2",
+                33,
+                outs_f.add(lay.conjtype) as Ptr,
+            )?;
+            run_tagger(
+                self,
+                "conjform_w1",
+                "conjform_b1",
+                "conjform_w2",
+                "conjform_b2",
+                81,
+                outs_f.add(lay.conjform) as Ptr,
+            )?;
 
             // LoRA 双头（wf 5 类 / bpf 64 类）：base 线性加 delta，广播加后过 GELU，再过 classifier 与 sigmoid
-            let mut run_lora = |g: &mut Self, w1n: &str, b1n: &str, delta: &str, clf: &str, b2n: &str, l: usize, slot_base: &'static str, slot_g: &'static str, dst: Ptr| -> Result<(), String> {
+            let mut run_lora = |g: &mut Self,
+                                w1n: &str,
+                                b1n: &str,
+                                delta: &str,
+                                clf: &str,
+                                b2n: &str,
+                                l: usize,
+                                slot_base: &'static str,
+                                slot_g: &'static str,
+                                dst: Ptr|
+             -> Result<(), String> {
                 let base = g.buf(slot_base, m * 768 * 4)?;
                 let (w1, b1) = (g.w(w1n)?, g.w(b1n)?);
                 g.gemm_nn(pooled, w1.ptr, base, m, 768, 768)?;
@@ -98,8 +227,30 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
                 g.classify_sigmoid(gs, cw.ptr, cb.ptr, dst, m, 768, l)?;
                 Ok(())
             };
-            run_lora(self, "wf_w1", "wf_b1", "wf_delta", "wf_clf", "wf_b2", 5, "wf_base", "wf_g", outs_f.add(lay.wf) as Ptr)?;
-            run_lora(self, "bpf_w1", "bpf_b1", "bpf_delta", "bpf_clf", "bpf_b2", 64, "bpf_base", "bpf_g", outs_f.add(lay.bpf) as Ptr)?;
+            run_lora(
+                self,
+                "wf_w1",
+                "wf_b1",
+                "wf_delta",
+                "wf_clf",
+                "wf_b2",
+                5,
+                "wf_base",
+                "wf_g",
+                outs_f.add(lay.wf) as Ptr,
+            )?;
+            run_lora(
+                self,
+                "bpf_w1",
+                "bpf_b1",
+                "bpf_delta",
+                "bpf_clf",
+                "bpf_b2",
+                64,
+                "bpf_base",
+                "bpf_g",
+                outs_f.add(lay.bpf) as Ptr,
+            )?;
 
             // ne：pooled 经 Linear(768,768)+GELU+Linear(768,17)
             let ne1 = self.buf("ne1", m * 768 * 4)?;
@@ -123,7 +274,14 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
             run_proj(self, "dis_wt", "dis_bt", outs_f.add(lay.dis_ht) as Ptr)?;
 
             // cohesion：单层线性 + per-rel LoRA（广播相加），输出 (M,9,768) 平坦
-            let mut run_coh = |g: &mut Self, wn: &str, bn: &str, dn: &str, slot_base: &'static str, slot_delta: &'static str, dst: Ptr| -> Result<(), String> {
+            let mut run_coh = |g: &mut Self,
+                               wn: &str,
+                               bn: &str,
+                               dn: &str,
+                               slot_base: &'static str,
+                               slot_delta: &'static str,
+                               dst: Ptr|
+             -> Result<(), String> {
                 let base = g.buf(slot_base, m * 768 * 4)?;
                 let (w, b) = (g.w(wn)?, g.w(bn)?);
                 g.gemm_nn(pooled, w.ptr, base, m, 768, 768)?;
@@ -134,8 +292,24 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
                 g.coh_bcast_add(base, delta, dst, m * 6912, 9, 768)?;
                 Ok(())
             };
-            run_coh(self, "coh_ws", "coh_bs", "coh_delta_s", "coh_base_s", "coh_delta_s_buf", outs_f.add(lay.coh_s) as Ptr)?;
-            run_coh(self, "coh_wt", "coh_bt", "coh_delta_t", "coh_base_t", "coh_delta_t_buf", outs_f.add(lay.coh_t) as Ptr)?;
+            run_coh(
+                self,
+                "coh_ws",
+                "coh_bs",
+                "coh_delta_s",
+                "coh_base_s",
+                "coh_delta_s_buf",
+                outs_f.add(lay.coh_s) as Ptr,
+            )?;
+            run_coh(
+                self,
+                "coh_wt",
+                "coh_bt",
+                "coh_delta_t",
+                "coh_base_t",
+                "coh_delta_t_buf",
+                outs_f.add(lay.coh_t) as Ptr,
+            )?;
 
             if (self.sync)() != 0 {
                 return Err("cudaDeviceSynchronize 失败".into());
@@ -147,7 +321,10 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
             let host = std::slice::from_raw_parts(pin_out as *const f32, lay.total);
 
             let reading_argmax: Vec<usize> = {
-                let bytes = std::slice::from_raw_parts((pin_out as *mut u8).add(lay.rargmax * 4) as *const u8, t * 4);
+                let bytes = std::slice::from_raw_parts(
+                    (pin_out as *mut u8).add(lay.rargmax * 4) as *const u8,
+                    t * 4,
+                );
                 bytes
                     .chunks_exact(4)
                     .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as usize)
@@ -161,9 +338,24 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
             let mut bpf_prob = Vec::with_capacity(m);
             let mut ne_logits = Vec::with_capacity(m);
             Self::rows_from(&mut pos_logits, &host[lay.pos..lay.pos + m * 14], m, 14);
-            Self::rows_from(&mut subpos_logits, &host[lay.subpos..lay.subpos + m * 35], m, 35);
-            Self::rows_from(&mut conjtype_logits, &host[lay.conjtype..lay.conjtype + m * 33], m, 33);
-            Self::rows_from(&mut conjform_logits, &host[lay.conjform..lay.conjform + m * 81], m, 81);
+            Self::rows_from(
+                &mut subpos_logits,
+                &host[lay.subpos..lay.subpos + m * 35],
+                m,
+                35,
+            );
+            Self::rows_from(
+                &mut conjtype_logits,
+                &host[lay.conjtype..lay.conjtype + m * 33],
+                m,
+                33,
+            );
+            Self::rows_from(
+                &mut conjform_logits,
+                &host[lay.conjform..lay.conjform + m * 81],
+                m,
+                81,
+            );
             Self::rows_from(&mut wf_prob, &host[lay.wf..lay.wf + m * 5], m, 5);
             Self::rows_from(&mut bpf_prob, &host[lay.bpf..lay.bpf + m * 64], m, 64);
             Self::rows_from(&mut ne_logits, &host[lay.ne..lay.ne + m * 17], m, 17);
@@ -195,7 +387,11 @@ pub(super)    fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: 
         }
     }
 
-pub(super)    fn dep_type_argmax(&mut self, pairs: &[(usize, usize)], pooled: &[Vec<f32>]) -> Result<Vec<usize>, String> {
+    pub(super) fn dep_type_argmax(
+        &mut self,
+        pairs: &[(usize, usize)],
+        pooled: &[Vec<f32>],
+    ) -> Result<Vec<usize>, String> {
         unsafe {
             if (self.cu_ctx_set)(self.ctx) != 0 {
                 return Err("cuCtxSetCurrent（dep_type 归位）失败".into());
@@ -233,4 +429,3 @@ pub(super)    fn dep_type_argmax(&mut self, pairs: &[(usize, usize)], pooled: &[
         }
     }
 }
-

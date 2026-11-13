@@ -2,7 +2,7 @@ use super::config::Config;
 use super::layers::StableDropout;
 
 use candle::{Module, Result, Tensor};
-use candle_nn::{conv1d, layer_norm, Conv1d, Conv1dConfig, LayerNorm, VarBuilder};
+use candle_nn::{Conv1d, Conv1dConfig, LayerNorm, VarBuilder, conv1d, layer_norm};
 
 // ConvLayer 仅在 config.conv_kernel_size > 0 时加载；当前模型配置未启用该层。
 pub struct ConvLayer {

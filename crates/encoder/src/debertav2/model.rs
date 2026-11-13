@@ -63,7 +63,9 @@ impl DebertaV2Model {
         )?;
 
         if self.z_steps > 1 {
-            todo!("Complete DebertaV2Model forward() when z_steps > 1 -- Needs a model to test this situation.")
+            todo!(
+                "Complete DebertaV2Model forward() when z_steps > 1 -- Needs a model to test this situation."
+            )
         }
 
         Ok(encoder_output)
