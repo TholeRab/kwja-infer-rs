@@ -15,7 +15,7 @@ use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use kwja_encoder::{Encoder, WordEncoderInput};
+use kwja_encoder::{Encoder, ParallelEncoder, WordEncoderInput};
 use kwja_heads::forward::{RelationWiseProjection, SelectionProjection, WordHeads};
 use kwja_heads::sequence_labeling::{
     get_morpheme_attribute_predictions, viterbi_decode, CrfParameters,
@@ -153,30 +153,21 @@ impl WordPredictor {
             >(1);
             let encoder: &mut dyn Encoder = &mut *encoder;
             let prep_ms = prep_ms.clone();
-            // 编码线程：独占 encoder（ORT session），逐段编码后连同段引用转交解码线程
+            // 编码线程：独占型后端（ORT session，&mut）逐段串行；共享型后端
+            //（tract 计划 Sync）把整段窗撒到 rayon 池按窗并行——与解码/合并
+            // 同一个池、同一批核，不再有 ORT CPU EP 的第二线程池抢核。
             scope.spawn(move || {
                 for chunk in req_rx {
                     let t = std::time::Instant::now();
-                    let mut preps = Vec::with_capacity(chunk.len());
-                    let mut err = None;
-                    for window in chunk {
-                        match pred.prep_window(encoder, window) {
-                            Ok(p) => preps.push(p),
-                            Err(e) => {
-                                err = Some(e);
-                                break;
-                            }
-                        }
-                    }
+                    let payload = match encoder.as_parallel() {
+                        Some(par) => pred.prep_windows_parallel(par, chunk),
+                        None => pred.prep_windows_serial(encoder, chunk),
+                    };
                     prep_ms.fetch_add(
                         t.elapsed().as_micros() as u64,
                         std::sync::atomic::Ordering::Relaxed,
                     );
-                    let had_err = err.is_some();
-                    let payload = match err {
-                        Some(e) => Err(e),
-                        None => Ok(preps),
-                    };
+                    let had_err = payload.is_err();
                     if prep_tx.send((chunk, payload)).is_err() || had_err {
                         break;
                     }
@@ -268,6 +259,54 @@ impl WordPredictor {
 
     /// 一个窗口：编码 → 前向 → 解码 → 组装。超长窗返回 `None`
     ///（上游 warning 后 `continue`——本窗不产出任何内容）。
+    /// 串行预备：独占型后端（ORT session，&mut）逐窗分词＋编码。
+    fn prep_windows_serial(
+        &self,
+        encoder: &mut dyn Encoder,
+        windows: &[WordWindow],
+    ) -> Result<Vec<Option<WindowPrep>>, String> {
+        let mut preps = Vec::with_capacity(windows.len());
+        for window in windows {
+            preps.push(self.prep_window(encoder, window)?);
+        }
+        Ok(preps)
+    }
+
+    /// ★并行预备（rust-encoder-no-ort）：tract 计划 Sync，分词与编码按窗
+    /// 撒到 rayon 池上并发——编码与解码/合并共用同一批核、同一个池。
+    /// 每窗计算内容与串行版相同，逐字节结果不变；超长窗照旧跳过。
+    fn prep_windows_parallel(
+        &self,
+        encoder: &dyn ParallelEncoder,
+        windows: &[WordWindow],
+    ) -> Result<Vec<Option<WindowPrep>>, String> {
+        windows
+            .par_iter()
+            .map(|window| {
+                let surfs = window.surfs();
+                let encoding = self.tokenizer.encode_window(&surfs)?;
+                let n_specials = self.tables.dataset_special_tokens().len();
+                // 超长窗：word_inference.py:118-121 warning + continue
+                if encoding.num_tokens > self.max_seq_length - n_specials {
+                    return Ok(None);
+                }
+                let special_token_indices: Vec<i64> = (0..n_specials as i64)
+                    .map(|i| encoding.num_tokens as i64 + i)
+                    .collect();
+                let hidden = encoder
+                    .run_word_shared(&WordEncoderInput {
+                        input_ids: encoding.input_ids.clone(),
+                        attention_mask: encoding.attention_mask.clone(),
+                        special_token_indices,
+                        batch: 1,
+                        seq: self.max_seq_length,
+                    })
+                    .map_err(|e| e.to_string())?;
+                Ok(Some(WindowPrep { encoding, hidden }))
+            })
+            .collect()
+    }
+
     #[allow(clippy::too_many_lines)]
     /// 阶段一-A（串行）：分词 ＋ 编码器前向。
     ///

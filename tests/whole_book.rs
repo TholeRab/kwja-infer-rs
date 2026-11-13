@@ -6,7 +6,8 @@
 
 use std::path::PathBuf;
 
-use kwja_encoder::ort_backend::{Device, OrtBackend};
+use kwja_encoder::ort_backend::Device;
+use kwja_encoder::{make_backend, Encoder};
 use kwja_pipeline::word_predict::WordPredictor;
 
 /// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
@@ -31,9 +32,11 @@ fn onnx_dir() -> PathBuf {
 /// 测试设备由 KWJA_DEVICE 决定：cuda（默认，断言 CUDA 真生效）／cpu
 ///（**纯 CPU**，断言 provider 里没有 CUDA）／auto（打印实际 provider）。
 /// ★CPU 形态的最终检验＝10 章闸；整书（4691 窗）只跑 GPU——CPU 跑整书太慢。
-fn backend() -> OrtBackend {
+fn backend() -> Box<dyn Encoder> {
     let dir = onnx_dir();
     let dev = std::env::var("KWJA_DEVICE").unwrap_or_default();
+    let backend_kind = std::env::var("KWJA_BACKEND").unwrap_or_default();
+    let rust_backend = backend_kind == "tract" || backend_kind == "rust";
     let want_cuda = dev.is_empty() || dev == "cuda";
     let pure_cpu = dev == "cpu";
     let device = if pure_cpu {
@@ -43,28 +46,29 @@ fn backend() -> OrtBackend {
     } else {
         Device::Auto
     };
-    let backend = OrtBackend::new(
+    let backend = make_backend(
         dir.join("char_dynamic.onnx"),
         dir.join("word_encoder7.onnx"),
         device,
     )
-    .expect("ORT 后端创建失败");
+    .expect("编码后端创建失败");
     // ★断言设备真到位：EP 起不来时 ORT 会静默回落 CPU，
     // 产出虽应逐字节相同，但那就不是目标配置了（事实账 §六）。
+    // tract 后端恒为 CPU 单线程，不做 EP 断言。
     let providers = backend.active_providers();
-    if want_cuda {
+    if !rust_backend && want_cuda {
         assert!(
             providers.iter().any(|p| p.contains("CUDA")),
             "active_providers 不含 CUDA（静默回落 CPU？）：{providers:?}"
         );
     }
-    if pure_cpu {
+    if !rust_backend && pure_cpu {
         assert!(
             !providers.iter().any(|p| p.contains("CUDA")),
             "要求纯 CPU，active_providers 却含 CUDA：{providers:?}"
         );
     }
-    if dev == "auto" {
+    if dev == "auto" || rust_backend {
         eprintln!("active_providers：{providers:?}");
     }
     backend
@@ -108,7 +112,7 @@ fn run_case(char_fixture: &str, knp_fixture: &str, what: &str) {
     let mut predictor = predictor();
     let mut encoder = backend();
     let got = predictor
-        .predict_text(&mut encoder, &char_text)
+        .predict_text(encoder.as_mut(), &char_text)
         .expect("word 阶段推理失败");
     // 实际输出落盘，便于 diff 定位（失败与成功都留档）
     let dump = std::env::temp_dir().join(format!(
