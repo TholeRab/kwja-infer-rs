@@ -131,9 +131,24 @@ fn wire_gpu_heads(predictor: &mut WordPredictor, has_cuda: bool) {
 }
 
 fn run_case(char_fixture: &str, knp_fixture: &str, what: &str) {
-    let char_text =
-        std::fs::read_to_string(fixtures_dir().join(char_fixture)).expect("char fixture 缺失");
-    let expected = std::fs::read_to_string(fixtures_dir().join(knp_fixture)).expect("KNP 基线缺失");
+    // 测试基线不进 git（共约 36 MB，且能从 corpus/ + 参考实现仓 的导出脚本重建）。
+    // 缺失时**跳过本用例并说明原因**，不 panic：让「克隆后没跑过 gen-fixtures」的人
+    // 也能跑完其余测试，而不是看到一堆红色失败却不知道是缺文件。
+    let (char_text, expected) = match (
+        std::fs::read_to_string(fixtures_dir().join(char_fixture)),
+        std::fs::read_to_string(fixtures_dir().join(knp_fixture)),
+    ) {
+        (Ok(c), Ok(e)) => (c, e),
+        (c, e) => {
+            eprintln!(
+                "跳过「{what}」：测试基线缺失（{} / {}）。\
+                 \n  生成方式： tools/gen-fixtures.sh（需要 参考实现仓 与 CUDA GPU）",
+                if c.is_err() { char_fixture } else { "ok" },
+                if e.is_err() { knp_fixture } else { "ok" },
+            );
+            return;
+        }
+    };
     let mut predictor = predictor();
     let mut encoder = backend();
     let has_cuda = encoder.active_providers().iter().any(|p| p.contains("CUDA"));

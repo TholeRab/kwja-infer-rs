@@ -145,8 +145,17 @@ fn assert_dump_equal(produced: &str, expected: &str, name: &str) {
 }
 
 fn check(name: &str) {
-    let fixture = std::fs::read_to_string(fixtures_dir().join(format!("word_windows_{name}.txt")))
-        .expect("word 分窗基线缺失");
+    // 基线不进 git（逐行含原文）。缺失时跳过并说明，不 panic。
+    let (Ok(fixture), Ok(juman_text)) = (
+        std::fs::read_to_string(fixtures_dir().join(format!("word_windows_{name}.txt"))),
+        std::fs::read_to_string(fixtures_dir().join(format!("char_stage_{name}.txt"))),
+    ) else {
+        eprintln!(
+            "跳过：分窗基线 word_windows_{name}.txt / char_stage_{name}.txt 缺失。\n  \
+             生成方式 tools/gen-fixtures.sh（需 参考实现仓 + CUDA GPU + 测试语料）"
+        );
+        return;
+    };
     // 头部元信息以 Python 侧为准，测试不做任何假设
     let mut max_token_length: Option<usize> = None;
     let mut stride: Option<i64> = None;
@@ -161,8 +170,6 @@ fn check(name: &str) {
     let max_token_length = max_token_length.expect("基线头部缺 max_token_length");
     let stride = stride.expect("基线头部缺 stride");
 
-    let juman_text = std::fs::read_to_string(fixtures_dir().join(format!("char_stage_{name}.txt")))
-        .expect("char 产出基线缺失");
     let produced = dump_windows(
         &juman_text,
         "doc",

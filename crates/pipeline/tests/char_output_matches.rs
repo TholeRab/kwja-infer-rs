@@ -92,13 +92,42 @@ fn backend() -> OrtBackend {
     backend
 }
 
-fn corpus_texts() -> Vec<String> {
-    (1..=59)
-        .map(|k| {
-            std::fs::read_to_string(corpus_dir().join(format!("bk-CH-{k:04}.txt")))
-                .expect("语料章节缺失")
-        })
-        .collect()
+/// 读测试语料。
+///
+/// ★语料**不进 git**：原文来自 第三方语料 的连载小说，著作権属于作者本人。
+///   第三方语料 利用規約 第 12 条禁止「超出私的使用范围的复制」，第 13 条禁止营利利用，
+///   第 11 条明确著作权归投稿者。**公开仓库里放整本书原文＝公开传播他人作品**，
+///   与本仓是否营利无关，所以本仓一个字都不存。
+///
+/// 语料放在`外部语料目录`（整书）。
+/// 跑这些用例前把该目录拷到本仓 `crates/pipeline/tests/corpus/`，或用
+/// `本地语料目录` 指过去。缺失时返回 None，调用方跳过并说明原因。
+///
+/// 长期方案：换成青空文库的公版文本，那样语料可以随仓库公开（待办）。
+fn corpus_texts() -> Option<Vec<String>> {
+    let dir = std::env::var("本地语料目录")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| corpus_dir());
+    if !dir.is_dir() {
+        eprintln!(
+            "跳过：测试语料目录不存在（{dir:?}）。\n  \
+             语料是 第三方语料 原文，不随本仓公开；请从外部语料目录 \
+             拷入 crates/pipeline/tests/corpus/，或设 本地语料目录 指过去。"
+        );
+        return None;
+    }
+    let mut out = Vec::with_capacity(59);
+    for k in 1..=59 {
+        let p = dir.join(format!("bk-CH-{k:04}.txt"));
+        match std::fs::read_to_string(&p) {
+            Ok(t) => out.push(t),
+            Err(_) => {
+                eprintln!("跳过：语料缺 {p:?}");
+                return None;
+            }
+        }
+    }
+    Some(out)
 }
 
 /// 逐字节比对；失败时给出长度、行号与首个差异处的两侧内容，便于定位。
@@ -133,15 +162,34 @@ fn assert_bytes_equal(got: &str, expected: &str, what: &str) {
 #[test]
 fn chapter1_matches_python_byte_for_byte() {
     let started = std::time::Instant::now();
-    let texts = corpus_texts();
+    let Some(texts) = corpus_texts() else {
+        return;
+    };
     let normalized: Vec<String> = texts[..1].iter().map(|t| normalize_text(t)).collect();
     let output = char_stage()
         .run(&normalized, Some("c"), &mut backend())
         .expect("char 阶段单章运行失败");
     eprintln!("单章 CH-0001 耗时 {:?}", started.elapsed());
-    let expected =
-        std::fs::read_to_string(fixtures_dir().join("char_stage_ch1.txt")).expect("单章基线缺失");
+    let Some(expected) = read_fixture("char_stage_ch1.txt") else {
+        return;
+    };
     assert_bytes_equal(&output, &expected, "单章 char 产出");
+}
+
+/// 读测试基线；缺失时返回 None 让调用方跳过。
+///
+/// ★基线不进 git（约 36 MB，可从 corpus/ + 参考实现仓 的导出脚本重建）。
+///   缺失时跳过而不是 panic：让只克隆了代码的人也能跑完不依赖基线的用例。
+fn read_fixture(name: &str) -> Option<String> {
+    match std::fs::read_to_string(fixtures_dir().join(name)) {
+        Ok(s) => Some(s),
+        Err(_) => {
+            eprintln!(
+                "跳过：基线 {name} 缺失。生成方式 tools/gen-fixtures.sh（需 参考实现仓 + CUDA GPU）"
+            );
+            None
+        }
+    }
 }
 
 /// 分层运行前 N 章。N 小时秒级返回，用来在改动的第一时间发现回归，
@@ -152,7 +200,9 @@ fn chapter1_matches_python_byte_for_byte() {
 ///   从整书基线切前缀对不上。
 fn run_tier(n_chapters: usize, fixture: &str) {
     let started = std::time::Instant::now();
-    let texts = corpus_texts();
+    let Some(texts) = corpus_texts() else {
+        return;
+    };
     let normalized: Vec<String> = texts[..n_chapters]
         .iter()
         .map(|t| normalize_text(t))
@@ -161,7 +211,9 @@ fn run_tier(n_chapters: usize, fixture: &str) {
         .run(&normalized, Some("c"), &mut backend())
         .expect("char 阶段分级运行失败");
     eprintln!("{n_chapters} 章 耗时 {:?}", started.elapsed());
-    let expected = std::fs::read_to_string(fixtures_dir().join(fixture)).expect("分级基线缺失");
+    let Some(expected) = read_fixture(fixture) else {
+        return;
+    };
     assert_bytes_equal(&output, &expected, &format!("{n_chapters} 章 char 产出"));
 }
 
@@ -185,13 +237,16 @@ fn ten_chapters_match_python_byte_for_byte() {
 #[test]
 fn whole_book_matches_python_byte_for_byte() {
     let started = std::time::Instant::now();
-    let texts = corpus_texts();
+    let Some(texts) = corpus_texts() else {
+        return;
+    };
     let normalized: Vec<String> = texts.iter().map(|t| normalize_text(t)).collect();
     let output = char_stage()
         .run(&normalized, Some("c"), &mut backend())
         .expect("char 阶段整书运行失败");
     eprintln!("整书耗时 {:?}", started.elapsed());
-    let expected =
-        std::fs::read_to_string(fixtures_dir().join("char_stage_all.txt")).expect("整书基线缺失");
+    let Some(expected) = read_fixture("char_stage_all.txt") else {
+        return;
+    };
     assert_bytes_equal(&output, &expected, "整书 char 产出");
 }
