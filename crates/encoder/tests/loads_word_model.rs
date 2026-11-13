@@ -1,11 +1,10 @@
-//! 阶段 1 闸（word）：ORT 能加载 word_encoder7.onnx，active_providers 含 CUDA，
-//! last_hidden_state shape 为 [batch,seq,768]（方案 §三 表）。
+//! word 侧加载测试：ORT 能加载 word_encoder7.onnx，active_providers 含 CUDA，
+//! last_hidden_state shape 为 [batch,seq,768]。
 
 use kwja_encoder::ort_backend::{Device, OrtBackend};
 use kwja_encoder::{Encoder, WordEncoderInput};
 
 /// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
-/// ★ 起素材一律在本仓 assets/ 下，不再引用 参考实现仓。
 fn repo_path(rel: &str) -> String {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()

@@ -1,7 +1,7 @@
 //! 基于 candle-transformers 0.9.2 的 debertav2.rs 改造：加入 KWJA 特有的
-//! special_token_indices 相对位置扩展。语义对照
-//! 代码/src/kwja/modules/components/deberta_v2.py 的 get_rel_pos：
-//! special token 参与的 (query, key) 组，相对位置改用 -position_buckets，对角线保持 0。
+//! special_token_indices 相对位置扩展——special token 参与的 (query, key) 组，
+//! 相对位置改用 -position_buckets，对角线保持 0。
+//! 结构与 transformers 的 DeBERTa-v2 参考实现逐块对应。
 
 use std::collections::HashMap;
 
@@ -13,7 +13,7 @@ use serde::{Deserialize, Deserializer};
 
 pub const DTYPE: DType = DType::F32;
 
-// NOTE: HiddenAct and HiddenActLayer are both direct copies from bert.rs.
+// HiddenAct 与 HiddenActLayer 直接取自 candle-transformers 的 bert 实现。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HiddenAct {
@@ -36,7 +36,6 @@ impl HiddenActLayer {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
         match self.act {
-            // https://github.com/huggingface/transformers/blob/cd4584e3c809bb9e1392ccd3fe38b40daba5519a/src/transformers/activations.py#L213
             HiddenAct::Gelu => xs.gelu_erf(),
             HiddenAct::GeluApproximate => xs.gelu(),
             HiddenAct::Relu => xs.relu(),
@@ -100,8 +99,7 @@ where
     }
 }
 
-// NOTE: Dropout is probably not needed for now since this will primarily be used
-// in inferencing. However, for training/fine-tuning it will be necessary.
+// 本实现面向推理，未启用随机 Dropout；若用于训练/微调，这里必须换成真正的 Dropout。
 pub struct StableDropout {
     _drop_prob: f64,
     _count: usize,
@@ -120,7 +118,6 @@ impl StableDropout {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L823
 pub struct DebertaV2Embeddings {
     device: Device,
     word_embeddings: Embedding,
@@ -283,12 +280,11 @@ impl DebertaV2Embeddings {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L72
 struct XSoftmax {}
 
 impl XSoftmax {
     pub fn apply(input: &Tensor, mask: &Tensor, dim: D, device: &Device) -> Result<Tensor> {
-        // NOTE: At the time of this writing, candle does not have a logical-not operator.
+        // candle 没有逻辑非算子：这里用 mask < 1 生成反掩码，再以 where_cond 选极小值/清零。
         let mut rmask = mask.broadcast_as(input.shape())?.to_dtype(DType::F32)?;
 
         rmask = rmask
@@ -307,7 +303,6 @@ impl XSoftmax {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L605
 pub struct DebertaV2DisentangledSelfAttention {
     config: Config,
     num_attention_heads: usize,
@@ -701,7 +696,6 @@ impl DebertaV2DisentangledSelfAttention {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L270
 pub struct DebertaV2Attention {
     dsa: DebertaV2DisentangledSelfAttention,
     output: DebertaV2SelfOutput,
@@ -735,7 +729,6 @@ impl DebertaV2Attention {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L255
 pub struct DebertaV2SelfOutput {
     dense: candle_nn::Linear,
     layer_norm: LayerNorm,
@@ -766,7 +759,6 @@ impl DebertaV2SelfOutput {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L307
 pub struct DebertaV2Intermediate {
     dense: candle_nn::Linear,
     intermediate_act: HiddenActLayer,
@@ -792,7 +784,6 @@ impl DebertaV2Intermediate {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L323
 pub struct DebertaV2Output {
     dense: candle_nn::Linear,
     layer_norm: LayerNorm,
@@ -830,7 +821,6 @@ impl DebertaV2Output {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L339
 pub struct DebertaV2Layer {
     attention: DebertaV2Attention,
     intermediate: DebertaV2Intermediate,
@@ -875,8 +865,7 @@ impl DebertaV2Layer {
     }
 }
 
-// TODO: In order to fully test ConvLayer a model needs to be found has a configuration where `conv_kernel_size` exists and is > 0
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L373
+// ConvLayer 仅在 config.conv_kernel_size > 0 时加载；当前模型配置未启用该层。
 pub struct ConvLayer {
     _conv_act: String,
     _conv: Conv1d,
@@ -929,8 +918,8 @@ impl ConvLayer {
         residual_states: &Tensor,
         input_mask: &Tensor,
     ) -> Result<Tensor> {
-        // 对应 代码/src/kwja/modules/components/deberta_v2.py 的 ConvLayer.forward：
-        // conv1d（通道优先进出）→ 掩码位清零 → GELU → 残差相加 → LayerNorm → 乘回掩码。
+        // ConvLayer.forward 的流程：conv1d（通道优先进出）、掩码位清零、GELU、
+        // 残差相加、LayerNorm、再乘回掩码。
         let out = self._conv.forward(&hidden_states.transpose(1, 2)?)?; // (b, hid, seq)
         let out = out.transpose(1, 2)?; // (b, seq, hid)
         let masked = input_mask.eq(0i64)?; // (b, seq)，1 = 掩码位
@@ -945,7 +934,6 @@ impl ConvLayer {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L409
 pub struct DebertaV2Encoder {
     layer: Vec<DebertaV2Layer>,
     relative_attention: bool,
@@ -989,8 +977,8 @@ impl DebertaV2Encoder {
             )?);
         }
 
-        // NOTE: The Python code assumes that the config attribute "norm_rel_ebd" is an array of some kind, but most examples have it as a string.
-        // So it might need to be updated at some point.
+        // Python 实现假定 norm_rel_ebd 是数组，常见配置里实际是字符串；
+        // 这里按字符串解析，等于 layer_norm 时给 rel_embeddings 配 LayerNorm。
         let norm_rel_ebd = match config.norm_rel_ebd.as_ref() {
             Some(nre) => nre.trim().to_string(),
             None => "none".to_string(),
@@ -1052,9 +1040,7 @@ impl DebertaV2Encoder {
         let mut query_states: Option<Tensor> = query_states.cloned();
 
         for (i, layer_module) in self.layer.iter().enumerate() {
-            // NOTE: The original python code branches here if this model is being
-            // used for training vs. inferencing. For now, we will only handle the
-            // inferencing side of things
+            // 只实现推理分支；训练/微调分支不在本实现内。
 
             output_states = layer_module.forward(
                 next_kv.as_ref(),
@@ -1119,7 +1105,7 @@ impl DebertaV2Encoder {
                 Some(self.max_relative_positions),
             )?;
 
-            // ★KWJA 扩展：special token 参与的 (query, key) 组，相对位置改成
+            // KWJA 扩展：special token 参与的 (query, key) 组，相对位置改成
             // -position_buckets（对角线保持 0），其余组用原分桶值。
             if let Some(specials) = special_token_indices {
                 let batch = hidden_states.dim(0)?;
@@ -1190,7 +1176,6 @@ impl DebertaV2Encoder {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L991
 pub struct DebertaV2Model {
     embeddings: DebertaV2Embeddings,
     encoder: DebertaV2Encoder,
@@ -1379,7 +1364,6 @@ pub struct DebertaV2ContextPooler {
     config: Config,
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L49
 impl DebertaV2ContextPooler {
     pub fn load(vb: VarBuilder, config: &Config) -> Result<Self> {
         let pooler_hidden_size = config
@@ -1423,7 +1407,6 @@ impl DebertaV2ContextPooler {
     }
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L557
 pub(crate) fn build_relative_position(
     query_size: usize,
     key_size: usize,
@@ -1446,7 +1429,6 @@ pub(crate) fn build_relative_position(
     rel_pos_ids.unsqueeze(0)
 }
 
-// https://github.com/huggingface/transformers/blob/78b2929c0554b79e0489b451ce4ece14d265ead2/src/transformers/models/deberta_v2/modeling_deberta_v2.py#L542
 pub(crate) fn make_log_bucket_position(
     relative_pos: Tensor,
     bucket_size: isize,

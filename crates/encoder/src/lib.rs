@@ -1,5 +1,5 @@
-//! encoder：推理后端抽象。当前后端为 ORT（`ort_backend`），以后可换 candle。
-//! 本 crate 是全仓唯一为「换后端」留口子的地方，其余 crate 全部面向本 trait 编程。
+//! encoder：推理后端抽象。其余 crate 一律面向 Encoder / ParallelEncoder trait 编程，
+//! 不直接依赖具体后端实现（ort_backend、candle_backend）。
 
 use std::path::Path;
 
@@ -28,7 +28,7 @@ pub struct CharEncoderInput {
     pub seq: usize,
 }
 
-/// char 阶段三个头的原始 logits。
+/// char 侧三个序列标注头的原始 logits。
 pub struct CharLogits {
     /// (1, seq, 2)
     pub sent_segmentation: Array3<f32>,
@@ -47,9 +47,9 @@ pub enum EncoderError {
 }
 
 /// 按 KWJA_BACKEND 选后端：缺省 ort（ONNX Runtime，DLL）；
-/// candle/rust = 纯 Rust candle 后端（无 ONNX Runtime、无 DLL，权重来自
-/// _cache/kwja/v2.4 的 .ckpt 转出的 safetensors，可用 KWJA_WORD_CKPT/
-/// KWJA_CHAR_CKPT 覆盖路径）。
+/// candle/rust = 纯 Rust candle 后端（无 ONNX Runtime、无 DLL），权重为 ckpt
+/// 转出的 safetensors（tools/convert_ckpt_to_safetensors.py），路径可用
+/// KWJA_WORD_CKPT / KWJA_CHAR_CKPT 覆盖。
 /// device 只对 ort 有意义（candle 恒为 CPU，多线程靠统一 rayon 池）。
 pub fn make_backend(
     char_model: impl AsRef<Path>,
@@ -64,15 +64,15 @@ pub fn make_backend(
     }
 }
 
-/// 能被多线程共享调用的后端（&self、Sync）。★这是拿掉 ORT 的调度收益所在：
-/// ORT 的 session 是 &mut 独占（且其 CPU EP 自带线程池，与 rayon 抢同一批核）；
-/// tract 的可执行计划不可变，编码可以与解码/合并跑在**同一个 rayon 池**上。
+/// 能被多线程共享调用的后端（&self、Sync）。ORT 的 session 是 &mut 独占，
+/// 且其 CPU EP 自带线程池，与 rayon 抢同一批核；
+/// tract/candle 的前向不可变，编码可与解码/合并共用同一个 rayon 池。
 pub trait ParallelEncoder: Encoder + Sync {
     fn run_word_shared(&self, input: &WordEncoderInput) -> Result<Array3<f32>, EncoderError>;
     fn run_char_shared(&self, input: &CharEncoderInput) -> Result<CharLogits, EncoderError>;
 }
 
-/// ★Send：B2 流水里编码要挪到独立线程独占运行（见 word_predict 的双缓冲）。
+/// Send：编码需能挪到独立线程独占运行（见 pipeline word_predict 的双缓冲）。
 pub trait Encoder: Send {
     fn run_char(&mut self, input: &CharEncoderInput) -> Result<CharLogits, EncoderError>;
     fn run_word(&mut self, input: &WordEncoderInput) -> Result<Array3<f32>, EncoderError>;
@@ -82,6 +82,6 @@ pub trait Encoder: Send {
     }
     fn backend_name(&self) -> &str;
     /// 启动时必须断言返回值含 CUDAExecutionProvider：
-    /// ORT 曾静默回退 CPU，慢 18.8 倍且不报错（事实账 §六）。
+    /// ORT 曾静默回退 CPU，慢 18.8 倍且不报错。
     fn active_providers(&self) -> Vec<String>;
 }

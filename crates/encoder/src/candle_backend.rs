@@ -1,13 +1,13 @@
-//! candle 纯 Rust 编码后端（路线 A，）：DeBERTa-v2 前向走本 crate
-//! 内改造的 debertav2 模块（参考 candle-transformers 0.9.2 的同名实现），
-//! matmul 走 gemm（纯 Rust、AVX2 运行时分发），不依赖 ORT 与任何外部 DLL。
+//! candle 纯 Rust 编码后端：DeBERTa-v2 前向走 crate 内改造的 debertav2 模块
+//! （基于 candle-transformers 0.9.2 的同名实现），matmul 走 gemm（纯 Rust、
+//! AVX2 运行时分发），不依赖 ORT 与任何外部 DLL。
 //!
-//! - 权重：_cache/kwja/v2.4 的 ckpt 经 tools/convert_ckpt_to_safetensors.py
-//!   转出的 safetensors，与 ONNX 模型同目录；config 用 HF 快照里的 config.json。
+//! - 权重：tools/convert_ckpt_to_safetensors.py 从 ckpt 转出的 safetensors，
+//!   与 ONNX 模型同目录；config 用 HF 快照里的 config.json。
 //! - 多线程：单次前向单线程（gemm），并行来自 ParallelEncoder 的按窗 rayon
-//!   并发——与解码/合并同一个池，全流程统一线程版图。
-//! - char 模型 = 同一 DeBERTa 底座＋三个 SequenceLabelingHead
-//!   （Linear→GELU→Linear，见 代码/src/kwja/modules/components/head.py:36）。
+//!   并发，与解码/合并共用同一个 rayon 池。
+//! - char 模型 = 同一 DeBERTa 底座 + 三个序列标注头
+//!   （Linear-GELU-Dropout-Linear，推理期 Dropout 恒等）。
 
 use std::path::{Path, PathBuf};
 
@@ -29,8 +29,8 @@ pub struct CandleBackend {
     device: Device,
 }
 
-/// char 的三个序列标注头（head.py 的 SequenceLabelingHead：
-/// Linear(hidden,hidden)→GELU→Dropout→Linear(hidden,num_labels)，推理期 Dropout 恒等）。
+/// char 的三个序列标注头：Linear(hidden,hidden)-GELU-Dropout-Linear(hidden,num_labels)，
+/// 推理期 Dropout 恒等。
 struct CharHeads {
     sent_segmentation: (candle_nn::Linear, candle_nn::Linear),
     word_segmentation: (candle_nn::Linear, candle_nn::Linear),
@@ -117,8 +117,8 @@ fn load_model(
 ) -> Result<DebertaV2Model, EncoderError> {
     let tensors = candle::safetensors::load(safetensors_path, device)
         .map_err(|e| EncoderError::Session(format!("加载 {} 失败：{e:?}", safetensors_path.display())))?;
-    // KWJA 侧 resize_token_embeddings(vocab + 特殊 token 数)——ckpt 的词表比
-    // config.json 大（word: 32000→32008）。以实际权重为准。
+    // 对应 PyTorch 侧的 resize_token_embeddings(vocab + 特殊 token 数)：
+    // ckpt 的词表比 config.json 大（word 从 32000 到 32008）。以实际权重为准。
     let actual_vocab = tensors
         .get("embeddings.word_embeddings.weight")
         .map(|t| {
@@ -153,7 +153,7 @@ impl CandleBackend {
             .parent()
             .unwrap_or(Path::new("."))
             .join("char_deberta-v2-base-wwm.safetensors");
-        // HF config 从 hub 缓存解析；缓存根 = kwja-infer-rs 的上一级 外部素材目录/hf/hub。
+        // HF config 从 hub 缓存解析；缓存根取 KWJA_HF_HUB，未设置时按上级目录约定解析。
         let hub = word_onnx
             .ancestors()
             .nth(3)

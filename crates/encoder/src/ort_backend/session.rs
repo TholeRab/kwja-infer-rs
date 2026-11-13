@@ -1,9 +1,9 @@
-//! ORT 会话封装：一个进程一个 `Environment`（ORT 硬限制），char/word 各一个 `Session`。
-//! 链接走 `ORT_LIB_PATH` 指向的本机 onnxruntime 1.23.2（见 `.cargo/config.toml`）。
+//! ORT 会话封装：一个进程一个 Environment（ORT 硬限制），char/word 各一个 Session。
+//! 链接走 ORT_LIB_PATH 指向的本机 onnxruntime 1.23.2（见 .cargo/config.toml）。
 //!
-//! ★本路线用 load-dynamic（运行时 `ort::init_from` 显式加载 DLL），**不需要导入库**；
-//! capi 目录里只有 `onnxruntime.dll` 是正常的。若有人重新生成 `.lib` 并试图走静态链接，
-//! 会撞上 System32 里 1.17 的旧 DLL（见 设计文档/18 §二#2）。
+//! 加载方式是 load-dynamic（运行时 ort::init_from 显式加载 DLL），不需要导入库；
+//! capi 目录里只有 onnxruntime.dll 是正常的。若重新生成 .lib 走静态链接，
+//! 会撞上 System32 里 1.17 的旧 DLL（见 ort_dll_path 的文档）。
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -20,13 +20,12 @@ use crate::{CharEncoderInput, CharLogits, Encoder, EncoderError, WordEncoderInpu
 /// 所以存全局；设备在首次创建时固定，之后所有 OrtBackend 共用。
 static ENVIRONMENT: OnceLock<Result<Environment, String>> = OnceLock::new();
 
-/// onnxruntime.dll 的显式加载路径。必须走 `init_from` 绝对路径加载，不能靠链接期导入：
+/// onnxruntime.dll 的显式加载路径。必须走 init_from 绝对路径加载，不能靠链接期导入：
 /// 本机 System32 里有一份旧版 onnxruntime.dll（1.17.x），Windows 加载器对静态导入的
-/// 搜索顺序是 exe 目录 → System32 → PATH，System32 永远压过 PATH——实测正是它导致
-/// 「requested API version 23 not available, current ORT 1.17.1」。运行期显式指路才绕得开。
-/// ★素材在本仓 assets/ 下（ 起不再引用 参考实现仓）。
-/// 查找顺序：KWJA_ORT_DLL 环境变量 → 从 crate 清单目录向上找 assets/ort/...
-/// → 再从 exe 所在目录向上找（打包分发时走后者）。
+/// 搜索顺序是 exe 目录、System32、PATH，System32 永远压过 PATH，这正是
+/// 『requested API version 23 not available, current ORT 1.17.1』的成因，运行期显式指路才绕得开。
+/// 查找顺序：先读 KWJA_ORT_DLL 环境变量；否则从 crate 清单目录向上找 assets/ort/...；
+/// 打包分发时从 exe 所在目录向上找。
 fn ort_dll_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("KWJA_ORT_DLL") {
         return p.into();
@@ -53,15 +52,13 @@ fn ort_dll_path() -> std::path::PathBuf {
     panic!("找不到 onnxruntime.dll。已试过 KWJA_ORT_DLL、仓根/assets/ort/...、exe 上溯路径");
 }
 
-/// CUDA/cuDNN 运行库预载清单（torch/lib 内，**按依赖序**）。
+/// CUDA/cuDNN 运行库预载清单（本仓 assets/cuda，按依赖序排列）。
 ///
-/// ★为什么必须预载（ 实测，探针 `encoder/tests/cuda_speed_probe.rs`）：
-/// Rust 进程里 ORT 的 CUDA EP 做依赖解析时**不走 PATH**——不预载时 EP 照样
-/// 注册成功（`active_providers` 含 CUDA），但节点全部静默落 CPU：
-/// seq=512 单次 char 前向 ~620ms；按下面顺序预载后 ~25ms。
-/// Python 侧等价动作是「先 import torch」把 CUDA DLL 装进进程
-/// （AGENTS.md 的 ORT 模板用 os.add_dll_directory，同一件事）。
-/// 顺序不能乱：`cudnn_ops64_9.dll` 静态依赖 `cudnn_graph64_9.dll`，
+/// 为什么必须预载：Rust 进程里 ORT 的 CUDA EP 做依赖解析时不走 PATH——
+/// 不预载时 EP 照样注册成功（active_providers 含 CUDA），但节点全部静默落 CPU：
+/// seq=512 单次 char 前向约 620ms，按下面顺序预载后约 25ms。
+/// Python 侧等价动作是先 import torch 把 CUDA DLL 装进进程。
+/// 顺序不能乱：cudnn_ops64_9.dll 静态依赖 cudnn_graph64_9.dll，
 /// graph 必须先于 ops/cnn/adv 装入。
 const CUDA_DLLS: [&str; 14] = [
     "cudart64_12.dll",
@@ -83,7 +80,6 @@ const CUDA_DLLS: [&str; 14] = [
 /// 把 CUDA 运行库按依赖序预载进进程。个别库加载失败只告警不中断：
 /// 缺哪个，CUDA EP 就建不起来，会回落 CPU（测试里的 CUDA 断言会拦住）。
 /// CUDA 运行库目录：沿用与 ort_dll_path 相同的上溯策略，找本仓 assets/cuda。
-/// ★ 起不再引用仓外路径（原先默认指向 Python 环境/.../torch/lib）。
 fn cuda_dll_dir() -> std::path::PathBuf {
     const REL: &str = "assets/cuda";
     let from_manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -119,7 +115,7 @@ fn preload_cuda_dlls() {
     }
 }
 
-/// 进程级 ORT Environment（ORT 硬限制每进程一个）；char/word 与 E1 头会话共用。
+/// 进程级 ORT Environment（ORT 硬限制每进程一个）；char/word 与 heads 的会话共用。
 pub fn global_environment(device: Device) -> Result<&'static Environment, EncoderError> {
     let built = ENVIRONMENT.get_or_init(|| {
         preload_cuda_dlls();
@@ -168,7 +164,7 @@ impl OrtBackend {
         })
     }
 
-    /// 启动时必须断言返回值含 CUDAExecutionProvider（事实账 §六）。
+    /// 启动时必须断言返回值含 CUDAExecutionProvider。
     pub fn active_providers(&self) -> Vec<String> {
         self.providers.clone()
     }

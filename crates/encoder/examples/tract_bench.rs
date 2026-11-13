@@ -1,7 +1,7 @@
 //! tract 编码器微基准：量单窗前向耗时，并分别验证两种并行是否真的摊得开。
 //!
-//! 四个阶段：①单线程内核串行 4 窗；②单线程内核并发 12 窗（窗间并行）；
-//! ③12 线程内核串行 4 窗（窗内并行，tract multithread-mm）；④12 线程内核并发 12 窗。
+//! 四种配置：1) 单线程内核串行 4 窗；2) 单线程内核并发 12 窗（窗间并行）；
+//! 3) 12 线程内核串行 4 窗（窗内并行，tract multithread-mm）；4) 12 线程内核并发 12 窗。
 //! 用法：KWJA_BACKEND=tract cargo run --release -p kwja-encoder --example tract_bench
 
 use kwja_encoder::{make_backend, ParallelEncoder, WordEncoderInput};

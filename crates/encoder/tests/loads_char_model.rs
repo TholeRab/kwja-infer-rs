@@ -1,11 +1,10 @@
-//! 阶段 1 闸（char）：ORT 能加载 char_dynamic.onnx，active_providers 含 CUDA，
-//! 输出 shape 与方案 §三 表一致（sent/word [1,seq,2]、word_norm_op [1,seq,6]）。
+//! char 侧加载测试：ORT 能加载 char_dynamic.onnx，active_providers 含 CUDA，
+//! 输出 shape 为 sent/word [1,seq,2]、word_norm_op [1,seq,6]。
 
 use kwja_encoder::ort_backend::{Device, OrtBackend};
 use kwja_encoder::{CharEncoderInput, Encoder};
 
 /// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
-/// ★ 起素材一律在本仓 assets/ 下，不再引用 参考实现仓。
 fn repo_path(rel: &str) -> String {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
