@@ -42,7 +42,8 @@ pub enum EncoderError {
     Session(String),
 }
 
-pub trait Encoder {
+/// ★Send：B2 流水里编码要挪到独立线程独占运行（见 word_predict 的双缓冲）。
+pub trait Encoder: Send {
     fn run_char(&mut self, input: &CharEncoderInput) -> Result<CharLogits, EncoderError>;
     fn run_word(&mut self, input: &WordEncoderInput) -> Result<Array3<f32>, EncoderError>;
     fn backend_name(&self) -> &str;

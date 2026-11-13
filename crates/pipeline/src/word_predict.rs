@@ -133,22 +133,62 @@ impl WordPredictor {
         let mut prep_ms = 0.0f64;
         let mut dec_ms = 0.0f64;
         let mut abs_ms = 0.0f64;
-        for chunk in windows.chunks(SEGMENT) {
-            // ★编码必须串行：`Encoder::run_word` 要 `&mut self`（ORT session 独占）。
-            let t = std::time::Instant::now();
-            let mut preps = Vec::with_capacity(chunk.len());
-            for window in chunk {
-                preps.push(self.prep_window(encoder, window)?);
-            }
-            prep_ms += t.elapsed().as_secs_f64() * 1000.0;
+        // ★双缓冲：编码与解码双缓冲流水。编码要 `&mut encoder`
+        //   （ORT session 独占、串行），解码/合并只要 `&self`（并行 CPU）——
+        //   两者可以重叠：第 N+1 段编码时，第 N 段在解码＋合并。
+        //   用 scoped thread 独占借用 encoder；prep 通道限 1 段，内存在界。
+        //   段 0 无可重叠（和原来一样串行），收益从段 1 开始；逐字节结果不变。
+        let pred: &WordPredictor = self; // 闭包里只用共享借用（&mut self 只为兼容旧签名）
+        std::thread::scope(|scope| -> Result<(), String> {
+            let chunks: Vec<&[WordWindow]> = windows.chunks(SEGMENT).collect();
+            let (req_tx, req_rx) = std::sync::mpsc::channel::<&[WordWindow]>();
+            let (prep_tx, prep_rx) =
+                std::sync::mpsc::sync_channel::<Result<Vec<Option<WindowPrep>>, String>>(1);
+            let encoder: &mut dyn Encoder = &mut *encoder;
+            scope.spawn(move || {
+                for chunk in req_rx {
+                    let mut preps = Vec::with_capacity(chunk.len());
+                    let mut err = None;
+                    for window in chunk {
+                        match pred.prep_window(encoder, window) {
+                            Ok(p) => preps.push(p),
+                            Err(e) => {
+                                err = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    let had_err = err.is_some();
+                    let payload = match err {
+                        Some(e) => Err(e),
+                        None => Ok(preps),
+                    };
+                    if prep_tx.send(payload).is_err() {
+                        break;
+                    }
+                    if had_err {
+                        break; // 出错即退，避免主线程已不再接收时卡死在 send
+                    }
+                }
+            });
+            for (i, _) in chunks.iter().enumerate() {
+                // 发本段请求：段 0 立即编码；段 i>0 的编码与上一段解码/合并重叠
+                if req_tx.send(chunks[i]).is_err() {
+                    break;
+                }
+                // 等本段编码完（段 i>0 的等待大部分已被上一段的解码/合并吃掉）
+                let t = std::time::Instant::now();
+                let preps = prep_rx.recv().map_err(|_| "编码线程意外退出".to_string())??;
+                prep_ms += t.elapsed().as_secs_f64() * 1000.0;
+                let chunk = chunks[i];
 
-            // 13 头 ＋ 切分 ＋ NE ＋ 依存（并行铺满核；窗间独立、`&self` 不写共享状态）
-            let t = std::time::Instant::now();
+                // 13 头 ＋ 切分 ＋ NE ＋ 依存（并行铺满核；窗间独立、`&self` 不写共享状态）
+                let t = std::time::Instant::now();
             let outs: Vec<Option<(WinKeep, WinBig)>> = chunk
                 .par_iter()
                 .zip(preps)
                 .map(|(window, prep)| match prep {
-                    Some(p) => self.decode_window(window, p).map(Some),
+                    Some(p) => pred.decode_window(window, p).map(Some),
                     None => Ok(None),
                 })
                 .collect::<Result<Vec<_>, String>>()?;
@@ -170,13 +210,16 @@ impl WordPredictor {
             }
             let absorbed: Vec<AbsorbedWin> = jobs
                 .par_iter()
-                .map(|(win, keep, big)| absorb_one(*win, keep, big, &keeps, &buf.owner, &self.tables))
+                .map(|(win, keep, big)| absorb_one(*win, keep, big, &keeps, &buf.owner, &pred.tables))
                 .collect();
             for a in absorbed {
                 buf.fold(a);
             }
             abs_ms += t.elapsed().as_secs_f64() * 1000.0;
-        }
+            }
+            drop(req_tx); // 让编码线程退出，scope 随之收尾
+            Ok(())
+        })?;
 
         let t_render = std::time::Instant::now();
         let rendered = buf.render(&self.tables);
