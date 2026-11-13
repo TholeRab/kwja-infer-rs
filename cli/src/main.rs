@@ -14,7 +14,7 @@ use anyhow::Context;
 use anyhow::bail;
 use clap::Parser;
 use kwja_encoder::ort_backend::Device;
-use kwja_encoder::ort_backend::OrtBackend;
+use kwja_encoder::make_backend;
 use kwja_normalize::nfkc::normalize_text;
 use kwja_pipeline::char_stage::CharStage;
 use kwja_pipeline::word_predict::WordPredictor;
@@ -48,14 +48,14 @@ fn run() -> anyhow::Result<()> {
     let model_dir = resolve_model_dir(args.model_dir.clone())?;
     let device = parse_device(&args.device)?;
 
-    // ---- ORT 后端（char/word 共用一个进程级 Environment；设备在此定型）----
+    // ---- 编码后端：KWJA_BACKEND=candle/rust 走纯 Rust candle（恒 CPU），其余走 ORT ----
     let models = model_dir.join("models");
-    let mut backend = OrtBackend::new(
+    let mut backend = make_backend(
         models.join("char_dynamic.onnx"),
         models.join("word_encoder7.onnx"),
         device,
     )
-    .context("ORT 后端创建失败")?;
+    .context("编码后端创建失败")?;
     let providers = backend.active_providers();
     let has_cuda = providers.iter().any(|p| p.contains("CUDA"));
     if args.device == "cuda" && !has_cuda {
@@ -112,10 +112,10 @@ fn run() -> anyhow::Result<()> {
 
     let started = std::time::Instant::now();
     let jumanpp = char_stage
-        .run(&texts, Some("c"), &mut backend)
+        .run(&texts, Some("c"), &mut *backend)
         .map_err(anyhow::Error::msg)?;
     let knp = predictor
-        .predict_text(&mut backend, &jumanpp)
+        .predict_text(&mut *backend, &jumanpp)
         .map_err(anyhow::Error::msg)?;
     eprintln!(
         "完成：{:?}（设 KWJA_TIMING=1 可看 char/编码/解码/合并分段计时）",
