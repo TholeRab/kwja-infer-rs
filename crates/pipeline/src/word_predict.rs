@@ -125,9 +125,13 @@ impl WordPredictor {
         //   只是让投影早一点死，计算内容与全量版完全相同。
         const SEGMENT: usize = 64;
         let mut buf = Buffer::default();
+        // 流式渲出的文本，按章拼接。见 stream_release 的说明。
+        let mut out_text = String::new();
         // 非跳过窗的小数据（chunks/sids/ranges），下标 = 非跳过窗序号；
         // 其他窗的合并体视图要读「owner 窗」的这三样，所以全量驻留。
-        let mut keeps: Vec<WinKeep> = Vec::with_capacity(windows.len());
+        // ★Vec<Option<..>>：按章渲完后把该章的槽位置 None 释放内存，
+        //   但**下标不压缩**——absorb_one 的 live[ow] 用绝对窗口序号索引。
+        let mut keeps: Vec<Option<WinKeep>> = Vec::with_capacity(windows.len());
         // 三段耗时改用原子累计（三段在不同线程各自计时；单位微秒）
         let prep_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let dec_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -220,11 +224,11 @@ impl WordPredictor {
                         &mut buf.owner,
                         &mut buf.order,
                     );
-                    keeps.push(WinKeep {
+                    keeps.push(Some(WinKeep {
                         chunks: keep.chunks.clone(),
                         sids: keep.sids.clone(),
                         ranges: keep.ranges.clone(),
-                    });
+                    }));
                     jobs.push((win, keep, big));
                 }
                 let absorbed: Vec<AbsorbedWin> = jobs
@@ -240,12 +244,21 @@ impl WordPredictor {
                     t.elapsed().as_micros() as u64,
                     std::sync::atomic::Ordering::Relaxed,
                 );
+
+                // ---- 流式渲出已完整的章 ----
+                // sid 形如 c-07-49，章前缀是最后一个 '-' 之前的部分。
+                // 窗口按章连续（实测章切换恰好比章数少一），所以「order 里同一个章前缀
+                // 连续出现」成立：一旦 order 末尾那个章前缀不再增长，前面那些章就齐了。
+                // 判断「不再增长」的成本很低——只是比较字符串，不扫全表。
+                stream_release(&mut buf, &mut keeps, &pred.tables, &mut out_text);
             }
             Ok(())
         })?;
 
         let t_render = std::time::Instant::now();
-        let rendered = buf.render(&self.tables);
+        // 收尾：把剩下的（最后一章及任何未渲的）全部渲出
+        out_text.push_str(&buf.render_and_release(buf.order_len(), &self.tables));
+        let rendered = std::mem::take(&mut out_text);
         if dbg {
             let us = |a: &std::sync::atomic::AtomicU64| {
                 a.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0
@@ -259,6 +272,40 @@ impl WordPredictor {
             );
         }
         Ok(rendered)
+    }
+}
+
+/// 流式渲出「已完整的章」并释放其窗口。
+///
+/// ★为什么按章：sid 形如 `c-07-49`，章前缀 = 去掉末尾 `-N`。
+///   实测 sid 全书不重复、窗口严格按章连续（章切换恰好比章数少一），
+///   所以 `Buffer::order` 里同一章前缀是连续的一段，前面各段一定是完整的章。
+///
+/// ★为什么能释放：`render` 对每个 sid 只读 `wins[owner[sid]]` 与三个行表，
+///   键都是 sid 或 (sid, idx)，sid 章内唯一 ⇒ 不存在跨章引用。
+///
+/// `keeps` 这里**不裁剪**：它按绝对窗口序号被 `absorb_one` 的 `live[ow]` 索引，
+///   裁了会错位。它约 0.2 MB/窗，比 `wins` 小一个数量级，先不动。
+fn stream_release(
+    buf: &mut Buffer,
+    keeps: &mut [Option<WinKeep>],
+    tables: &crate::word_tables::WordTables,
+    out: &mut String,
+) {
+    let n = buf.completed_prefix_len();
+    if n == 0 {
+        return;
+    }
+    // 先渲：渲染只读 order[..n] 与 wins[owner[sid]]
+    out.push_str(&buf.render_and_release(n, tables));
+    // 再释放该批窗口：owner 已随 render_and_release 清掉，
+    // 这里把「已不再被任何存活 sid 引用」的 keeps 槽位置 None。
+    // 判据与 render_and_release 内部一致：owner 里已无该窗 ⇒ 可丢。
+    let live: std::collections::HashSet<usize> = buf.owner.values().copied().collect();
+    for (w, slot) in keeps.iter_mut().enumerate() {
+        if slot.is_some() && !live.contains(&w) {
+            *slot = None;
+        }
     }
 }
 

@@ -17,6 +17,11 @@ impl Inner {
                             return Err(format!("scratch {slot} 扩容失败"));
                         }
                         (self.memset)(p, 0, bytes);
+                        // ★扩容必须释放旧块（ 修，与 pin() 同一个 bug）：
+                        //   原先直接覆盖指针，旧显存永不回收。
+                        if !entry.1.is_null() {
+                            let _ = (self.dev_free)(entry.1);
+                        }
                         entry.1 = p;
                         entry.2 = bytes;
                     }
@@ -34,6 +39,11 @@ impl Inner {
     }
 
     /// 页锁定主机暂存池：按名复用，不足则扩容。H2D/D2H 走 pinned 提速。
+    ///
+    /// ★扩容必须先释放旧块（ 修）：原先直接 `entry.1 = p` 覆盖指针，
+    ///   旧块永不回收。`dt_pairs` 这类 slot 的大小随每窗的对数 p 变化，
+    ///   几乎每窗都触发扩容 ⇒ **每窗泄漏几十 MB，整书跑到 4 GB**。
+    ///   实测证据：c-41 章 786 个基本句里 `p` 每窗不同，扩容分支被反复走到。
     pub(super) unsafe fn pin(&mut self, slot: &'static str, bytes: usize) -> Result<Ptr, String> {
         unsafe {
             for entry in self.pinned.iter_mut() {
@@ -42,6 +52,10 @@ impl Inner {
                         let mut p: Ptr = std::ptr::null_mut();
                         if (self.host_alloc)(&mut p, bytes, 0) != 0 {
                             return Err(format!("pinned {slot} 扩容失败"));
+                        }
+                        // 释放旧块，否则每次扩容都泄漏
+                        if !entry.1.is_null() {
+                            let _ = (self.host_free)(entry.1);
                         }
                         entry.1 = p;
                         entry.2 = bytes;

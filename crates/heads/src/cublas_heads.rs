@@ -31,8 +31,8 @@ use std::sync::Mutex;
 use crate::gpu_heads::FusedHeadsOutput;
 
 use ffi::{
-    FnCuCtxSetCurrent, FnCuLaunch, FnHostAlloc, FnHostFree, FnMalloc, FnMemcpy, FnMemset, FnSgemm,
-    FnSync, Ptr,
+    FnCuCtxSetCurrent, FnCuLaunch, FnFree, FnHostAlloc, FnHostFree, FnMalloc, FnMemcpy, FnMemset,
+    FnSgemm, FnSync, Ptr,
 };
 
 struct Weight {
@@ -49,8 +49,8 @@ struct Inner {
     memcpy: FnMemcpy,
     memset: FnMemset,
     host_alloc: FnHostAlloc,
-    #[allow(dead_code)]
     host_free: FnHostFree,
+    dev_free: FnFree,
     sync: FnSync,
     launch: FnCuLaunch,
     k_bias_gelu: Ptr,
@@ -140,6 +140,7 @@ impl CublasHeads {
                 memset: h.memset,
                 host_alloc: h.host_alloc,
                 host_free: h.host_free,
+                dev_free: h.dev_free,
                 sync: h.sync,
                 launch: h.launch,
                 k_bias_gelu: ks[0],

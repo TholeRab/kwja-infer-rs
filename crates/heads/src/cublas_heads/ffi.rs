@@ -11,6 +11,8 @@ pub(super) const ATTR_CC_MINOR: i32 = 76;
 
 // cudart 符号
 pub(super) type FnMalloc = unsafe extern "system" fn(*mut Ptr, usize) -> i32;
+#[allow(dead_code)]
+pub(super) type FnFree = unsafe extern "system" fn(Ptr) -> i32;
 pub(super) type FnMemcpy = unsafe extern "system" fn(Ptr, *const c_void, usize, i32) -> i32;
 pub(super) type FnMemset = unsafe extern "system" fn(Ptr, i32, usize) -> i32;
 pub(super) type FnHostAlloc = unsafe extern "system" fn(*mut Ptr, usize, i32) -> i32;

@@ -6,7 +6,7 @@ use super::ffi::{
     ATTR_CC_MAJOR, ATTR_CC_MINOR, FnBlasCreate, FnCuCtxRetain, FnCuCtxSetCurrent, FnCuDeviceGet,
     FnCuGetAttr, FnCuGetFunction, FnCuInit, FnCuLaunch, FnCuModuleLoad, FnHostAlloc, FnHostFree,
     FnMalloc, FnMemcpy, FnMemset, FnNvrtcCompile, FnNvrtcCreate, FnNvrtcDestroy, FnNvrtcLog,
-    FnNvrtcLogSize, FnNvrtcPtx, FnNvrtcPtxSize, FnSetDevice, FnSgemm, FnSync, Ptr, load_lib, sym,
+    FnFree, FnNvrtcLogSize, FnNvrtcPtx, FnNvrtcPtxSize, FnSetDevice, FnSgemm, FnSync, Ptr, load_lib, sym,
 };
 use super::kernels::KERNEL_SRC;
 
@@ -21,6 +21,7 @@ pub(super) struct Handles {
     pub(super) memset: FnMemset,
     pub(super) host_alloc: FnHostAlloc,
     pub(super) host_free: FnHostFree,
+    pub(super) dev_free: FnFree,
     pub(super) sync: FnSync,
     pub(super) launch: FnCuLaunch,
     pub(super) cu_module_load: FnCuModuleLoad,
@@ -91,6 +92,7 @@ pub(super) fn init(models_dir: &std::path::Path) -> Result<Handles, String> {
     let memset: FnMemset = unsafe { std::mem::transmute(sym(cudart, "cudaMemset")?) };
     let host_alloc: FnHostAlloc = unsafe { std::mem::transmute(sym(cudart, "cudaHostAlloc")?) };
     let host_free: FnHostFree = unsafe { std::mem::transmute(sym(cudart, "cudaFreeHost")?) };
+    let dev_free: FnFree = unsafe { std::mem::transmute(sym(cudart, "cudaFree")?) };
     let sync: FnSync = unsafe { std::mem::transmute(sym(cudart, "cudaDeviceSynchronize")?) };
     let set_device: FnSetDevice = unsafe { std::mem::transmute(sym(cudart, "cudaSetDevice")?) };
     let blas_create: FnBlasCreate =
@@ -160,6 +162,7 @@ pub(super) fn init(models_dir: &std::path::Path) -> Result<Handles, String> {
         memset,
         host_alloc,
         host_free,
+        dev_free,
         sync,
         launch,
         cu_module_load,

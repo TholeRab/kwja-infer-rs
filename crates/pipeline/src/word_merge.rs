@@ -75,7 +75,7 @@ pub(crate) fn absorb_one(
     win: usize,
     keep: &WinKeep,
     big: &WinBig,
-    live: &[WinKeep],
+    live: &[Option<WinKeep>],
     owner: &HashMap<String, usize>,
     tables: &WordTables,
 ) -> AbsorbedWin {
@@ -86,13 +86,19 @@ pub(crate) fn absorb_one(
         if let Some(&ow) = owner.get(sid)
             && ow != win
         {
-            let oi = live[ow]
+            // ★live[ow] 必为 Some：owner 的窗与当前窗同属一章（sid 章内唯一），
+            //   而释放只发生在一章渲完之后，所以同章的 owner 窗不可能已被释放。
+            //   若这里为 None，说明「按章释放」的前提被破坏，必须立刻暴露而不是静默降级。
+            let ow_live = live[ow].as_ref().unwrap_or_else(|| {
+                panic!("owner 窗 {ow} 已被释放，但 sid {sid} 仍在合并：按章释放的前提被破坏")
+            });
+            let oi = ow_live
                 .sids
                 .iter()
                 .position(|s| s == sid)
                 .expect("缓冲句不在原窗");
-            let shift = keep.ranges[si].0 as i64 - live[ow].ranges[oi].0 as i64;
-            views.push((si, shift_chunk(&live[ow].chunks[oi], shift)));
+            let shift = keep.ranges[si].0 as i64 - ow_live.ranges[oi].0 as i64;
+            views.push((si, shift_chunk(&ow_live.chunks[oi], shift)));
             continue;
         }
         views.push((si, keep.chunks[si].clone()));
@@ -233,10 +239,17 @@ impl Buffer {
         self.wins.push(a.win);
     }
 
-    /// 渲染整份 KNP 文本。
-    pub(crate) fn render(&self, tables: &WordTables) -> String {
+    /// 渲染指定的 sid 切片，返回文本（不修改自身）。
+    ///
+    /// ★这是流式输出的基础：调用方可以「一章的 sid 齐了就渲一章」，
+    ///   再调 `release_upto` 丢掉那批窗，内存就不会随整书线性增长。
+    fn render_sids<'a>(
+        &self,
+        sids: impl Iterator<Item = &'a String>,
+        tables: &WordTables,
+    ) -> String {
         let mut lines: Vec<String> = Vec::new();
-        for sid in &self.order {
+        for sid in sids {
             let w = &self.wins[self.owner[sid]];
             let oi = w
                 .sids
@@ -312,6 +325,105 @@ impl Buffer {
         } else {
             lines.join("\n") + "\n"
         }
+    }
+
+    /// 当前待渲染的 sid 数。
+    pub(crate) fn order_len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// 已完整的章有几个 sid：返回「可以直接渲掉」的 sid 数。
+    ///
+    /// 判据：`order` 里同一个章前缀（sid 去掉末尾 -N）是连续的一段；
+    /// 末尾那段是**当前还在写**的章，不能渲。前面各段都已完整。
+    ///
+    /// 返回 0 表示还没有完整的章。
+    pub(crate) fn completed_prefix_len(&self) -> usize {
+        fn ch(s: &str) -> &str {
+            s.rsplit_once('-').map(|(a, _)| a).unwrap_or(s)
+        }
+        let Some(last) = self.order.last() else {
+            return 0;
+        };
+        let last_ch = ch(last);
+        // 从后往前找到最后一个「不是末章」的位置
+        for i in (0..self.order.len()).rev() {
+            if ch(&self.order[i]) != last_ch {
+                return i + 1;
+            }
+        }
+        0
+    }
+
+    /// 流式渲染：把 `order` 前 `n` 个 sid 渲成文本，并**释放**这些 sid 及其窗口。
+    ///
+    /// ★内存优化（）：整书 4691 窗若全量驻留，峰值会随书长线性涨
+    ///   （实测长书全量驻留可达数 GB）。改成「一章齐了就渲一章、丢掉该章的窗」后，
+    ///   `wins` 只剩未渲染章节的窗口，峰值与书长无关。
+    ///
+    /// ★为什么这样安全（三条实测依据）：
+    ///   1. sid 在全书中**不重复**（整书实测零重复）；
+    ///   2. 窗口**严格按章连续**（实测章切换恰好比章数少一），所以「前 n 个 sid」
+    ///      一定是完整的若干章，不会把一章劈开；
+    ///   3. `render` 对每个 sid 只读 `wins[owner[sid]]` 与三个行表，
+    ///      而这些键都是 sid 或 (sid, idx)，sid 章内唯一 ⇒ 不存在跨章引用。
+    ///
+    /// 返回渲染文本；调用方按序拼接即可得到整份输出。
+    pub(crate) fn render_and_release(
+        &mut self,
+        n: usize,
+        tables: &WordTables,
+    ) -> String {
+        if n == 0 {
+            return String::new();
+        }
+        let n = n.min(self.order.len());
+        let text = {
+            let sids: Vec<&String> = self.order[..n].iter().collect();
+            self.render_sids(sids.into_iter(), tables)
+        };
+
+        // ---- 释放前 n 个 sid 相关的一切 ----
+        // ★性能要点（实测踩过）：不能每次分配 vec![false; wins.len()] 再全扫一遍——
+        //   wins 不压缩的话，段数越多扫得越久，整书会退化成 O(段数 × 窗数)。
+        //   改成「先算出要保留的窗，再 drain 前缀」，只碰一次。
+
+        let released: std::collections::HashSet<String> =
+            self.order[..n].iter().cloned().collect();
+        self.dep_rows.retain(|sid, _| !released.contains(sid));
+        self.rel_rows.retain(|(sid, _), _| !released.contains(sid));
+        self.dis_rows.retain(|(sid, _), _| !released.contains(sid));
+
+        // 剩余的 sid 仍引用哪些窗（用 BTreeSet，取最大值即压缩边界）
+        let mut max_used: Option<usize> = None;
+        let mut used: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for sid in &self.order[n..] {
+            if let Some(&w) = self.owner.get(sid) {
+                used.insert(w);
+                max_used = Some(max_used.map_or(w, |m: usize| m.max(w)));
+            }
+        }
+        // 压缩：wins 只保留 [0, max_used]，且把不再被引用的槽位清空
+        let keep_upto = max_used.map_or(0, |m| m + 1);
+        for (w, slot) in self.wins.iter_mut().enumerate().take(keep_upto) {
+            if !used.contains(&w) {
+                slot.flat = Vec::new();
+                slot.chunks = Vec::new();
+                slot.sids = Vec::new();
+            }
+        }
+        // ★这里不 drain wins 的前缀：owner 里的下标是绝对窗口序号，
+        //   drain 会让后续 owner 全部失效。改为「清空内容」——
+        //   Vec 头本身（每个 72 字节）留着的开销可忽略。
+        self.wins.truncate(keep_upto.max(self.wins.len().min(keep_upto)));
+
+        // owner/order 前缀丢弃
+        self.order.drain(..n);
+        for sid in &released {
+            self.owner.remove(sid);
+        }
+
+        text
     }
 }
 
