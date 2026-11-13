@@ -8,9 +8,12 @@
 //! - wf/bpf：base 线性 + LoRA delta GEMM → 广播相加 → GELU → classifier→sigmoid；
 //! - dep/discourse：单层线性；cohesion：单层线性 + per-rel LoRA 广播相加；
 //! - dep_type：(P,1536) → 1536→1536 GELU → 1536→4，逐行 argmax。
-//! 逐元素差已验为 fp32 GEMM 噪声量级、argmax/阈值零翻转（阶段一/验-cublas分解.py）。
+//! 逐元素差已验为 fp32 GEMM 噪声量级、argmax/阈值零翻转（阶段一/验-cublas分解.py 与
+//! examples/check_cublas.rs 逐头对照）。
 //! 运行期 LoadLibraryW 载 torch/lib 的 cublas/cudart 与 nvrtc、驱动 nvcuda，
 //! 免构建期 CUDA 工具链；核函数按设备算力即时编译（sm_xx），不硬编码卡型。
+//! 传输纪律：进卡/回读都走页锁定（pinned）暂存；跨 CPU 的 13 路输出合进一块
+//! 连续显存，一窗只做一次 D2H 回读。
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_void, CStr};
@@ -31,6 +34,8 @@ const ATTR_CC_MINOR: i32 = 76;
 type FnMalloc = unsafe extern "system" fn(*mut Ptr, usize) -> i32;
 type FnMemcpy = unsafe extern "system" fn(Ptr, *const c_void, usize, i32) -> i32;
 type FnMemset = unsafe extern "system" fn(Ptr, i32, usize) -> i32;
+type FnHostAlloc = unsafe extern "system" fn(*mut Ptr, usize, i32) -> i32;
+type FnHostFree = unsafe extern "system" fn(Ptr) -> i32;
 type FnSync = unsafe extern "system" fn() -> i32;
 type FnSetDevice = unsafe extern "system" fn(i32) -> i32;
 
@@ -164,6 +169,8 @@ struct Inner {
     malloc: FnMalloc,
     memcpy: FnMemcpy,
     memset: FnMemset,
+    host_alloc: FnHostAlloc,
+    host_free: FnHostFree,
     sync: FnSync,
     launch: FnCuLaunch,
     k_bias_gelu: Ptr,
@@ -175,6 +182,7 @@ struct Inner {
     k_coh_add: Ptr,
     weights: HashMap<&'static str, Weight>,
     scratch: Vec<(&'static str, Ptr, usize)>,
+    pinned: Vec<(&'static str, Ptr, usize)>,
     sqrt2: f32,
     one: f32,
     half: f32,
@@ -185,7 +193,7 @@ pub struct CublasHeads {
     inner: Mutex<Inner>,
 }
 
-// 安全性：全部裸指针（cuBLAS 句柄、内核函数、显存指针）只在 Mutex 内串行使用；
+// 安全性：全部裸指针（cuBLAS 句柄、内核函数、显存/锁页指针）只在 Mutex 内串行使用；
 // CUDA 主上下文为设备级共享，句柄无线程亲和性，跨线程串行调用是安全的。
 unsafe impl Send for CublasHeads {}
 unsafe impl Sync for CublasHeads {}
@@ -196,6 +204,44 @@ struct Manifest {
     half: f32,
     weights: Vec<(String, usize, usize, Vec<usize>)>,
     total_bytes: usize,
+}
+
+/// 一窗输出在连续缓冲里的布局（f32 元素偏移；argmax 槽位按 4 字节复用）。
+struct OutLayout {
+    rargmax: usize,
+    pos: usize,
+    subpos: usize,
+    conjtype: usize,
+    conjform: usize,
+    wf: usize,
+    bpf: usize,
+    ne: usize,
+    dep_hs: usize,
+    dep_ht: usize,
+    dis_hs: usize,
+    dis_ht: usize,
+    coh_s: usize,
+    coh_t: usize,
+    total: usize,
+}
+
+fn out_layout(t: usize, m: usize) -> OutLayout {
+    let mut o = 0usize;
+    let rargmax = { let v = o; o += t; v };
+    let pos = { let v = o; o += m * 14; v };
+    let subpos = { let v = o; o += m * 35; v };
+    let conjtype = { let v = o; o += m * 33; v };
+    let conjform = { let v = o; o += m * 81; v };
+    let wf = { let v = o; o += m * 5; v };
+    let bpf = { let v = o; o += m * 64; v };
+    let ne = { let v = o; o += m * 17; v };
+    let dep_hs = { let v = o; o += m * 768; v };
+    let dep_ht = { let v = o; o += m * 768; v };
+    let dis_hs = { let v = o; o += m * 768; v };
+    let dis_ht = { let v = o; o += m * 768; v };
+    let coh_s = { let v = o; o += m * 6912; v };
+    let coh_t = { let v = o; o += m * 6912; v };
+    OutLayout { rargmax, pos, subpos, conjtype, conjform, wf, bpf, ne, dep_hs, dep_ht, dis_hs, dis_ht, coh_s, coh_t, total: o }
 }
 
 impl CublasHeads {
@@ -228,6 +274,8 @@ impl CublasHeads {
         let malloc: FnMalloc = unsafe { std::mem::transmute(sym(cudart, "cudaMalloc")?) };
         let memcpy: FnMemcpy = unsafe { std::mem::transmute(sym(cudart, "cudaMemcpy")?) };
         let memset: FnMemset = unsafe { std::mem::transmute(sym(cudart, "cudaMemset")?) };
+        let host_alloc: FnHostAlloc = unsafe { std::mem::transmute(sym(cudart, "cudaHostAlloc")?) };
+        let host_free: FnHostFree = unsafe { std::mem::transmute(sym(cudart, "cudaFreeHost")?) };
         let sync: FnSync = unsafe { std::mem::transmute(sym(cudart, "cudaDeviceSynchronize")?) };
         let set_device: FnSetDevice = unsafe { std::mem::transmute(sym(cudart, "cudaSetDevice")?) };
         let blas_create: FnBlasCreate = unsafe { std::mem::transmute(sym(cublas_dll, "cublasCreate_v2")?) };
@@ -238,6 +286,7 @@ impl CublasHeads {
                 return Err("cudaSetDevice(0) 失败".into());
             }
         }
+
         // 驱动侧：取主上下文 + 按设备算力编译内核（不硬编码卡型）。
         // ★cublas 句柄必须在本上下文内创建（句柄与上下文绑定，跨上下文调用即垃圾输出）。
         let cu_init: FnCuInit = unsafe { std::mem::transmute(sym(drv, "cuInit")?) };
@@ -433,11 +482,13 @@ impl CublasHeads {
             inner: Mutex::new(Inner {
                 cublas,
                 ctx,
-                cu_ctx_set,
+                cu_ctx_set: cu_ctx_set,
                 sgemm,
                 malloc,
                 memcpy,
                 memset,
+                host_alloc,
+                host_free,
                 sync,
                 launch,
                 k_bias_gelu,
@@ -449,6 +500,7 @@ impl CublasHeads {
                 k_coh_add,
                 weights,
                 scratch: Vec::new(),
+                pinned: Vec::new(),
                 sqrt2: manifest.sqrt2,
                 one: manifest.one,
                 half: manifest.half,
@@ -503,11 +555,11 @@ fn parse_manifest(bytes: &[u8]) -> Result<Manifest, String> {
 }
 
 impl Inner {
+    /// 显存 scratch 池：按名复用，不足则扩容（旧块不回收，峰值受窗上限约束）。
     unsafe fn buf(&mut self, slot: &'static str, bytes: usize) -> Result<Ptr, String> {
         for entry in self.scratch.iter_mut() {
             if entry.0 == slot {
                 if entry.2 < bytes {
-                    entry.1 = std::ptr::null_mut();
                     let mut p: Ptr = std::ptr::null_mut();
                     if (self.malloc)(&mut p, bytes) != 0 {
                         return Err(format!("scratch {slot} 扩容失败"));
@@ -525,6 +577,29 @@ impl Inner {
         }
         (self.memset)(p, 0, bytes);
         self.scratch.push((slot, p, bytes));
+        Ok(p)
+    }
+
+    /// 页锁定主机暂存池：按名复用，不足则扩容。H2D/D2H 走 pinned 提速。
+    unsafe fn pin(&mut self, slot: &'static str, bytes: usize) -> Result<Ptr, String> {
+        for entry in self.pinned.iter_mut() {
+            if entry.0 == slot {
+                if entry.2 < bytes {
+                    let mut p: Ptr = std::ptr::null_mut();
+                    if (self.host_alloc)(&mut p, bytes, 0) != 0 {
+                        return Err(format!("pinned {slot} 扩容失败"));
+                    }
+                    entry.1 = p;
+                    entry.2 = bytes;
+                }
+                return Ok(entry.1);
+            }
+        }
+        let mut p: Ptr = std::ptr::null_mut();
+        if (self.host_alloc)(&mut p, bytes, 0) != 0 {
+            return Err(format!("pinned {slot} 分配失败"));
+        }
+        self.pinned.push((slot, p, bytes));
         Ok(p)
     }
 
@@ -708,36 +783,40 @@ impl Inner {
         self.launch(self.k_coh_add, total, &mut args)
     }
 
-    unsafe fn to_device(&self, src: &[f32], dst: Ptr) -> Result<(), String> {
-        if (self.memcpy)(dst, src.as_ptr() as *const c_void, src.len() * 4, H2D) != 0 {
+    unsafe fn to_device(&self, src: Ptr, dst: Ptr, bytes: usize) -> Result<(), String> {
+        if (self.memcpy)(dst, src as *const c_void, bytes, H2D) != 0 {
             return Err("H2D 拷贝失败".into());
         }
         Ok(())
     }
 
-    unsafe fn to_host(&self, src: Ptr, dst: &mut [f32]) -> Result<(), String> {
-        if (self.memcpy)(dst.as_mut_ptr() as Ptr, src as *const c_void, dst.len() * 4, D2H) != 0 {
+    unsafe fn to_host(&self, src: Ptr, dst: Ptr, bytes: usize) -> Result<(), String> {
+        if (self.memcpy)(dst, src as *const c_void, bytes, D2H) != 0 {
             return Err("D2H 拷贝失败".into());
         }
         Ok(())
     }
 
-    unsafe fn to_host_bytes(&self, src: Ptr, dst: &mut [u8]) -> Result<(), String> {
-        if (self.memcpy)(dst.as_mut_ptr() as Ptr, src as *const c_void, dst.len(), D2H) != 0 {
-            return Err("D2H 拷贝失败".into());
-        }
-        Ok(())
-    }
-
-    fn flatten(rows: &[Vec<f32>], cols: usize, what: &str) -> Result<Vec<f32>, String> {
-        let mut flat = Vec::with_capacity(rows.len() * cols);
+    /// 把若干行写进 pinned 暂存（行主序摊平），返回写入的元素数。
+    fn flatten_into(rows: &[Vec<f32>], cols: usize, dst: *mut f32, what: &str) -> Result<usize, String> {
+        let mut n = 0usize;
         for (ri, row) in rows.iter().enumerate() {
             if row.len() != cols {
                 return Err(format!("{what} 第 {ri} 行宽度 {} != {cols}", row.len()));
             }
-            flat.extend_from_slice(row);
+            unsafe {
+                std::ptr::copy_nonoverlapping(row.as_ptr(), dst.add(n), cols);
+            }
+            n += cols;
         }
-        Ok(flat)
+        Ok(n)
+    }
+
+    fn rows_from(dst: &mut Vec<Vec<f32>>, src: &[f32], rows: usize, cols: usize) {
+        dst.clear();
+        for r in 0..rows {
+            dst.push(src[r * cols..(r + 1) * cols].to_vec());
+        }
     }
 
     fn forward_fused(&mut self, token_rows: &[Vec<f32>], pooled_rows: &[Vec<f32>]) -> Result<FusedHeadsOutput, String> {
@@ -752,15 +831,24 @@ impl Inner {
             if t == 0 || m == 0 {
                 return Err("空窗口".into());
             }
-            let hidden_flat = Self::flatten(token_rows, 768, "token_rows")?;
-            let pooled_flat = Self::flatten(pooled_rows, 768, "pooled_rows")?;
+            let lay = out_layout(t, m);
 
+            // ---- 进卡：hidden/pooled 摊平进 pinned，一次 H2D ----
+            let in_floats = 768 * (t + m);
+            let pin_in = self.pin("in", in_floats * 4)?;
+            let pin_in_f = pin_in as *mut f32;
+            Self::flatten_into(token_rows, 768, pin_in_f, "token_rows")?;
+            Self::flatten_into(pooled_rows, 768, pin_in_f.add(t * 768), "pooled_rows")?;
             let hidden = self.buf("hidden", t * 768 * 4)?;
             let pooled = self.buf("pooled", m * 768 * 4)?;
-            self.to_device(&hidden_flat, hidden)?;
-            self.to_device(&pooled_flat, pooled)?;
+            self.to_device(pin_in, hidden, t * 768 * 4)?;
+            self.to_device((pin_in as *mut u8).add(t * 768 * 4) as Ptr, pooled, m * 768 * 4)?;
 
-            // ---- reading：hidden → 768→768 GELU → 768→12907 ----
+            // ---- 输出缓冲：一窗一次回读，布局见 out_layout ----
+            let outs = self.buf("outs", lay.total * 4)?;
+            let outs_f = outs as *mut f32;
+
+            // ---- reading：hidden → 768→768 GELU → 768→12907 → argmax ----
             let r1 = self.buf("r1", t * 768 * 4)?;
             let (rw1, rb1) = (self.w("reading_w1")?, self.w("reading_b1")?);
             self.gemm_nn(hidden, rw1.ptr, r1, t, 768, 768)?;
@@ -769,28 +857,26 @@ impl Inner {
             let (rw2, rb2) = (self.w("reading_w2")?, self.w("reading_b2")?);
             self.gemm_nn(r1, rw2.ptr, rlogits, t, 768, 12907)?;
             self.bias_add(rlogits, rb2.ptr, t * 12907, 12907)?;
-            let rargmax = self.buf("rargmax", t * 4)?;
-            self.row_argmax(rlogits, 12907, t, rargmax)?;
+            self.row_argmax(rlogits, 12907, t, outs_f.add(lay.rargmax) as Ptr)?;
 
             // ---- 四个小 tagger：pooled → 768→768 GELU → 768→C ----
             let tag1 = self.buf("tag1", m * 768 * 4)?;
-            let mut run_tagger = |g: &mut Self, w1n: &str, b1n: &str, w2n: &str, b2n: &str, c: usize, slot: &'static str| -> Result<Ptr, String> {
+            let mut run_tagger = |g: &mut Self, w1n: &str, b1n: &str, w2n: &str, b2n: &str, c: usize, dst: Ptr| -> Result<(), String> {
                 let (w1, b1) = (g.w(w1n)?, g.w(b1n)?);
                 g.gemm_nn(pooled, w1.ptr, tag1, m, 768, 768)?;
                 g.bias_gelu(tag1, b1.ptr, m * 768, 768)?;
-                let out = g.buf(slot, m * c * 4)?;
                 let (w2, b2) = (g.w(w2n)?, g.w(b2n)?);
-                g.gemm_nn(tag1, w2.ptr, out, m, 768, c)?;
-                g.bias_add(out, b2.ptr, m * c, c)?;
-                Ok(out)
+                g.gemm_nn(tag1, w2.ptr, dst, m, 768, c)?;
+                g.bias_add(dst, b2.ptr, m * c, c)?;
+                Ok(())
             };
-            let pos_p = run_tagger(self, "pos_w1", "pos_b1", "pos_w2", "pos_b2", 14, "pos_out")?;
-            let subpos_p = run_tagger(self, "subpos_w1", "subpos_b1", "subpos_w2", "subpos_b2", 35, "subpos_out")?;
-            let conjtype_p = run_tagger(self, "conjtype_w1", "conjtype_b1", "conjtype_w2", "conjtype_b2", 33, "conjtype_out")?;
-            let conjform_p = run_tagger(self, "conjform_w1", "conjform_b1", "conjform_w2", "conjform_b2", 81, "conjform_out")?;
+            run_tagger(self, "pos_w1", "pos_b1", "pos_w2", "pos_b2", 14, outs_f.add(lay.pos) as Ptr)?;
+            run_tagger(self, "subpos_w1", "subpos_b1", "subpos_w2", "subpos_b2", 35, outs_f.add(lay.subpos) as Ptr)?;
+            run_tagger(self, "conjtype_w1", "conjtype_b1", "conjtype_w2", "conjtype_b2", 33, outs_f.add(lay.conjtype) as Ptr)?;
+            run_tagger(self, "conjform_w1", "conjform_b1", "conjform_w2", "conjform_b2", 81, outs_f.add(lay.conjform) as Ptr)?;
 
             // ---- LoRA 双头（wf 5 类 / bpf 64 类）：base 线性 + delta GEMM → 广播加 GELU → classifier → sigmoid ----
-            let mut run_lora = |g: &mut Self, w1n: &str, b1n: &str, delta: &str, clf: &str, b2n: &str, l: usize, slot_base: &'static str, slot_g: &'static str, slot_out: &'static str| -> Result<Ptr, String> {
+            let mut run_lora = |g: &mut Self, w1n: &str, b1n: &str, delta: &str, clf: &str, b2n: &str, l: usize, slot_base: &'static str, slot_g: &'static str, dst: Ptr| -> Result<(), String> {
                 let base = g.buf(slot_base, m * 768 * 4)?;
                 let (w1, b1) = (g.w(w1n)?, g.w(b1n)?);
                 g.gemm_nn(pooled, w1.ptr, base, m, 768, 768)?;
@@ -800,39 +886,36 @@ impl Inner {
                 g.gemm_nn(pooled, d.ptr, lora, m, 768, 768 * l)?;
                 let gs = g.buf(slot_g, m * 768 * l * 4)?;
                 g.bcast_add_gelu(base, lora, gs, m * 768 * l, l)?;
-                let out = g.buf(slot_out, m * l * 4)?;
                 let (cw, cb) = (g.w(clf)?, g.w(b2n)?);
-                g.classify_sigmoid(gs, cw.ptr, cb.ptr, out, m, 768, l)?;
-                Ok(out)
+                g.classify_sigmoid(gs, cw.ptr, cb.ptr, dst, m, 768, l)?;
+                Ok(())
             };
-            let wf_p = run_lora(self, "wf_w1", "wf_b1", "wf_delta", "wf_clf", "wf_b2", 5, "wf_base", "wf_g", "wf_out")?;
-            let bpf_p = run_lora(self, "bpf_w1", "bpf_b1", "bpf_delta", "bpf_clf", "bpf_b2", 64, "bpf_base", "bpf_g", "bpf_out")?;
+            run_lora(self, "wf_w1", "wf_b1", "wf_delta", "wf_clf", "wf_b2", 5, "wf_base", "wf_g", outs_f.add(lay.wf) as Ptr)?;
+            run_lora(self, "bpf_w1", "bpf_b1", "bpf_delta", "bpf_clf", "bpf_b2", 64, "bpf_base", "bpf_g", outs_f.add(lay.bpf) as Ptr)?;
 
             // ---- ne：pooled → 768→768 GELU → 768→17 ----
             let ne1 = self.buf("ne1", m * 768 * 4)?;
             let (nw1, nb1) = (self.w("ne_w1")?, self.w("ne_b1")?);
             self.gemm_nn(pooled, nw1.ptr, ne1, m, 768, 768)?;
             self.bias_gelu(ne1, nb1.ptr, m * 768, 768)?;
-            let ne_out = self.buf("ne_out", m * 17 * 4)?;
             let (nw2, nb2) = (self.w("ne_w2")?, self.w("ne_b2")?);
-            self.gemm_nn(ne1, nw2.ptr, ne_out, m, 768, 17)?;
-            self.bias_add(ne_out, nb2.ptr, m * 17, 17)?;
+            self.gemm_nn(ne1, nw2.ptr, outs_f.add(lay.ne) as Ptr, m, 768, 17)?;
+            self.bias_add(outs_f.add(lay.ne) as Ptr, nb2.ptr, m * 17, 17)?;
 
             // ---- dep/discourse 投影：单层线性，无激活 ----
-            let mut run_proj = |g: &mut Self, wn: &str, bn: &str, slot: &'static str| -> Result<Ptr, String> {
-                let out = g.buf(slot, m * 768 * 4)?;
+            let mut run_proj = |g: &mut Self, wn: &str, bn: &str, dst: Ptr| -> Result<(), String> {
                 let (w, b) = (g.w(wn)?, g.w(bn)?);
-                g.gemm_nn(pooled, w.ptr, out, m, 768, 768)?;
-                g.bias_add(out, b.ptr, m * 768, 768)?;
-                Ok(out)
+                g.gemm_nn(pooled, w.ptr, dst, m, 768, 768)?;
+                g.bias_add(dst, b.ptr, m * 768, 768)?;
+                Ok(())
             };
-            let dep_s = run_proj(self, "dep_ws", "dep_bs", "dep_s")?;
-            let dep_t = run_proj(self, "dep_wt", "dep_bt", "dep_t")?;
-            let dis_s = run_proj(self, "dis_ws", "dis_bs", "dis_s")?;
-            let dis_t = run_proj(self, "dis_wt", "dis_bt", "dis_t")?;
+            run_proj(self, "dep_ws", "dep_bs", outs_f.add(lay.dep_hs) as Ptr)?;
+            run_proj(self, "dep_wt", "dep_bt", outs_f.add(lay.dep_ht) as Ptr)?;
+            run_proj(self, "dis_ws", "dis_bs", outs_f.add(lay.dis_hs) as Ptr)?;
+            run_proj(self, "dis_wt", "dis_bt", outs_f.add(lay.dis_ht) as Ptr)?;
 
             // ---- cohesion：单层线性 + per-rel LoRA（广播相加），输出 (M,9,768) 平坦 ----
-            let mut run_coh = |g: &mut Self, wn: &str, bn: &str, dn: &str, slot_base: &'static str, slot_delta: &'static str, slot_out: &'static str| -> Result<Ptr, String> {
+            let mut run_coh = |g: &mut Self, wn: &str, bn: &str, dn: &str, slot_base: &'static str, slot_delta: &'static str, dst: Ptr| -> Result<(), String> {
                 let base = g.buf(slot_base, m * 768 * 4)?;
                 let (w, b) = (g.w(wn)?, g.w(bn)?);
                 g.gemm_nn(pooled, w.ptr, base, m, 768, 768)?;
@@ -840,68 +923,68 @@ impl Inner {
                 let delta = g.buf(slot_delta, m * 6912 * 4)?;
                 let dw = g.w(dn)?;
                 g.gemm_nn(pooled, dw.ptr, delta, m, 768, 6912)?;
-                let out = g.buf(slot_out, m * 6912 * 4)?;
-                g.coh_bcast_add(base, delta, out, m * 6912, 9, 768)?;
-                Ok(out)
+                g.coh_bcast_add(base, delta, dst, m * 6912, 9, 768)?;
+                Ok(())
             };
-            let coh_s = run_coh(self, "coh_ws", "coh_bs", "coh_delta_s", "coh_base_s", "coh_delta_s_buf", "coh_s_out")?;
-            let coh_t = run_coh(self, "coh_wt", "coh_bt", "coh_delta_t", "coh_base_t", "coh_delta_t_buf", "coh_t_out")?;
+            run_coh(self, "coh_ws", "coh_bs", "coh_delta_s", "coh_base_s", "coh_delta_s_buf", outs_f.add(lay.coh_s) as Ptr)?;
+            run_coh(self, "coh_wt", "coh_bt", "coh_delta_t", "coh_base_t", "coh_delta_t_buf", outs_f.add(lay.coh_t) as Ptr)?;
 
             if (self.sync)() != 0 {
                 return Err("cudaDeviceSynchronize 失败".into());
             }
 
-            // ---- D2H 与装配 ----
-            let mut argmax_bytes = vec![0u8; t * 4];
-            self.to_host_bytes(rargmax, &mut argmax_bytes)?;
-            let reading_argmax: Vec<usize> = argmax_bytes
-                .chunks_exact(4)
-                .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as usize)
-                .collect();
+            // ---- 一次 D2H 回读全部输出，CPU 侧装配 ----
+            let pin_out = self.pin("out", lay.total * 4)?;
+            self.to_host(outs, pin_out, lay.total * 4)?;
+            let host = std::slice::from_raw_parts(pin_out as *const f32, lay.total);
 
-            let pos = self.take_rows(pos_p, m, 14)?;
-            let subpos = self.take_rows(subpos_p, m, 35)?;
-            let conjtype = self.take_rows(conjtype_p, m, 33)?;
-            let conjform = self.take_rows(conjform_p, m, 81)?;
-            let wf = self.take_rows(wf_p, m, 5)?;
-            let bpf = self.take_rows(bpf_p, m, 64)?;
-            let ne = self.take_rows(ne_out, m, 17)?;
-            let dep_hs = self.take_rows(dep_s, m, 768)?;
-            let dep_ht = self.take_rows(dep_t, m, 768)?;
-            let dis_hs = self.take_rows(dis_s, m, 768)?;
-            let dis_ht = self.take_rows(dis_t, m, 768)?;
-            let coh_source = self.take_flat(coh_s, m * 6912)?;
-            let coh_target = self.take_flat(coh_t, m * 6912)?;
+            let reading_argmax: Vec<usize> = {
+                let bytes = std::slice::from_raw_parts((pin_out as *mut u8).add(lay.rargmax * 4) as *const u8, t * 4);
+                bytes
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as usize)
+                    .collect()
+            };
+            let mut pos_logits = Vec::with_capacity(m);
+            let mut subpos_logits = Vec::with_capacity(m);
+            let mut conjtype_logits = Vec::with_capacity(m);
+            let mut conjform_logits = Vec::with_capacity(m);
+            let mut wf_prob = Vec::with_capacity(m);
+            let mut bpf_prob = Vec::with_capacity(m);
+            let mut ne_logits = Vec::with_capacity(m);
+            Self::rows_from(&mut pos_logits, &host[lay.pos..lay.pos + m * 14], m, 14);
+            Self::rows_from(&mut subpos_logits, &host[lay.subpos..lay.subpos + m * 35], m, 35);
+            Self::rows_from(&mut conjtype_logits, &host[lay.conjtype..lay.conjtype + m * 33], m, 33);
+            Self::rows_from(&mut conjform_logits, &host[lay.conjform..lay.conjform + m * 81], m, 81);
+            Self::rows_from(&mut wf_prob, &host[lay.wf..lay.wf + m * 5], m, 5);
+            Self::rows_from(&mut bpf_prob, &host[lay.bpf..lay.bpf + m * 64], m, 64);
+            Self::rows_from(&mut ne_logits, &host[lay.ne..lay.ne + m * 17], m, 17);
+            let mut dep_hs = Vec::with_capacity(m);
+            let mut dep_ht = Vec::with_capacity(m);
+            let mut dis_hs = Vec::with_capacity(m);
+            let mut dis_ht = Vec::with_capacity(m);
+            Self::rows_from(&mut dep_hs, &host[lay.dep_hs..lay.dep_hs + m * 768], m, 768);
+            Self::rows_from(&mut dep_ht, &host[lay.dep_ht..lay.dep_ht + m * 768], m, 768);
+            Self::rows_from(&mut dis_hs, &host[lay.dis_hs..lay.dis_hs + m * 768], m, 768);
+            Self::rows_from(&mut dis_ht, &host[lay.dis_ht..lay.dis_ht + m * 768], m, 768);
 
             Ok(FusedHeadsOutput {
                 reading_argmax,
-                pos_logits: pos,
-                subpos_logits: subpos,
-                conjtype_logits: conjtype,
-                conjform_logits: conjform,
-                wf_prob: wf,
-                bpf_prob: bpf,
-                ne_logits: ne,
+                pos_logits,
+                subpos_logits,
+                conjtype_logits,
+                conjform_logits,
+                wf_prob,
+                bpf_prob,
+                ne_logits,
                 dep_hs,
                 dep_ht,
-                coh_source,
-                coh_target,
+                coh_source: host[lay.coh_s..lay.coh_s + m * 6912].to_vec(),
+                coh_target: host[lay.coh_t..lay.coh_t + m * 6912].to_vec(),
                 dis_hs,
                 dis_ht,
             })
         }
-    }
-
-    unsafe fn take_rows(&self, src: Ptr, rows: usize, cols: usize) -> Result<Vec<Vec<f32>>, String> {
-        let mut flat = vec![0f32; rows * cols];
-        self.to_host(src, &mut flat)?;
-        Ok(flat.chunks(cols).map(|c| c.to_vec()).collect())
-    }
-
-    unsafe fn take_flat(&self, src: Ptr, n: usize) -> Result<Vec<f32>, String> {
-        let mut flat = vec![0f32; n];
-        self.to_host(src, &mut flat)?;
-        Ok(flat)
     }
 
     fn dep_type_argmax(&mut self, pairs: &[(usize, usize)], pooled: &[Vec<f32>]) -> Result<Vec<usize>, String> {
@@ -914,14 +997,15 @@ impl Inner {
                 return Ok(Vec::new());
             }
             const PAIR_DIM: usize = 1536;
-            let mut flat = vec![0f32; p * PAIR_DIM];
+            let pin = self.pin("dt_pairs", p * PAIR_DIM * 4)?;
+            let pin_f = pin as *mut f32;
             for (i, (hg, parent)) in pairs.iter().enumerate() {
-                let base = i * PAIR_DIM;
-                flat[base..base + 768].copy_from_slice(&pooled[*hg]);
-                flat[base + 768..base + PAIR_DIM].copy_from_slice(&pooled[*parent]);
+                let base = pin_f.add(i * PAIR_DIM);
+                unsafe_fn_copy(base, &pooled[*hg]);
+                unsafe_fn_copy(base.add(768), &pooled[*parent]);
             }
-            let pairs_dev = self.buf("dt_pairs", p * PAIR_DIM * 4)?;
-            self.to_device(&flat, pairs_dev)?;
+            let pairs_dev = self.buf("dt_pairs_dev", p * PAIR_DIM * 4)?;
+            self.to_device(pin, pairs_dev, p * PAIR_DIM * 4)?;
             let mid = self.buf("dt_mid", p * PAIR_DIM * 4)?;
             let (w0, b0) = (self.w("dt_w0")?, self.w("dt_b0")?);
             self.gemm_tn(pairs_dev, w0.ptr, mid, p, PAIR_DIM, PAIR_DIM)?;
@@ -934,8 +1018,14 @@ impl Inner {
             if (self.sync)() != 0 {
                 return Err("cudaDeviceSynchronize 失败".into());
             }
-            let logits = self.take_rows(out, p, 4)?;
-            Ok(logits.iter().map(|row| argmax(row)).collect())
+            let pin_out = self.pin("dt_out_host", p * 4 * 4)?;
+            self.to_host(out, pin_out, p * 4 * 4)?;
+            let host = std::slice::from_raw_parts(pin_out as *const f32, p * 4);
+            Ok((0..p).map(|i| argmax(&host[i * 4..i * 4 + 4])).collect())
         }
     }
+}
+
+unsafe fn unsafe_fn_copy(dst: *mut f32, src: &[f32]) {
+    std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
 }
