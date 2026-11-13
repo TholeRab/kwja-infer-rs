@@ -55,7 +55,7 @@ DLL 只导出 4 个符号（`OrtGetApiBase` ＋ 三个 `OrtSessionOptionsAppendE
 
 ## cuda/
 
-**14 个 DLL，合计约 2.0 GB**，来自 torch 2.14.1+cu126 的 `torch/lib/`。
+**17 个 DLL，合计约 2.1 GB**（ 补入 nvrtc 三个：builtins64_126 / nvrtc64_120_0 / alt），来自 torch 2.14.1+cu126 的 `torch/lib/`。
 
 **为什么必须自带**：ORT 的 CUDA EP 在 Rust 进程里做依赖解析时**不走 PATH**。
 不预载时 EP 照样注册成功（`active_providers` 含 CUDA），
