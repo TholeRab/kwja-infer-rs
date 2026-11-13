@@ -1,7 +1,7 @@
 use super::config::Config;
 use super::feed_forward::DebertaV2SelfOutput;
 use super::layers::StableDropout;
-use super::relpos::build_relative_position;
+use super::build_relative_position;
 
 use candle::{bail, Context, DType, Device, Module, Result, Tensor, D};
 use candle_nn::VarBuilder;
