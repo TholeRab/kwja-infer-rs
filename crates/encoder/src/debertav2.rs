@@ -14,112 +14,11 @@ use serde::{Deserialize, Deserializer};
 mod relpos;
 pub(crate) use relpos::{build_relative_position, make_log_bucket_position};
 
-pub const DTYPE: DType = DType::F32;
+mod config;
+pub use config::{Config, DTYPE, HiddenAct, Id2Label, Label2Id};
 
-// HiddenAct 与 HiddenActLayer 直接取自 candle-transformers 的 bert 实现。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HiddenAct {
-    Gelu,
-    GeluApproximate,
-    Relu,
-}
-
-pub struct HiddenActLayer {
-    act: HiddenAct,
-    span: tracing::Span,
-}
-
-impl HiddenActLayer {
-    fn new(act: HiddenAct) -> Self {
-        let span = tracing::span!(tracing::Level::TRACE, "hidden-act");
-        Self { act, span }
-    }
-
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let _enter = self.span.enter();
-        match self.act {
-            HiddenAct::Gelu => xs.gelu_erf(),
-            HiddenAct::GeluApproximate => xs.gelu(),
-            HiddenAct::Relu => xs.relu(),
-        }
-    }
-}
-
-pub type Id2Label = HashMap<u32, String>;
-pub type Label2Id = HashMap<String, u32>;
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct Config {
-    pub vocab_size: usize,
-    pub hidden_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub intermediate_size: usize,
-    pub hidden_act: HiddenAct,
-    pub hidden_dropout_prob: f64,
-    pub attention_probs_dropout_prob: f64,
-    pub max_position_embeddings: usize,
-    pub type_vocab_size: usize,
-    pub initializer_range: f64,
-    pub layer_norm_eps: f64,
-    pub relative_attention: bool,
-    pub max_relative_positions: isize,
-    pub pad_token_id: Option<usize>,
-    pub position_biased_input: bool,
-    #[serde(deserialize_with = "deserialize_pos_att_type")]
-    pub pos_att_type: Vec<String>,
-    pub position_buckets: Option<isize>,
-    pub share_att_key: Option<bool>,
-    pub attention_head_size: Option<usize>,
-    pub embedding_size: Option<usize>,
-    pub norm_rel_ebd: Option<String>,
-    pub conv_kernel_size: Option<usize>,
-    pub conv_groups: Option<usize>,
-    pub conv_act: Option<String>,
-    pub id2label: Option<Id2Label>,
-    pub label2id: Option<Label2Id>,
-    pub pooler_dropout: Option<f64>,
-    pub pooler_hidden_act: Option<HiddenAct>,
-    pub pooler_hidden_size: Option<usize>,
-    pub cls_dropout: Option<f64>,
-}
-
-fn deserialize_pos_att_type<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize, Debug)]
-    #[serde(untagged)]
-    enum StringOrVec {
-        String(String),
-        Vec(Vec<String>),
-    }
-
-    match StringOrVec::deserialize(deserializer)? {
-        StringOrVec::String(s) => Ok(s.split('|').map(String::from).collect()),
-        StringOrVec::Vec(v) => Ok(v),
-    }
-}
-
-// 本实现面向推理，未启用随机 Dropout；若用于训练/微调，这里必须换成真正的 Dropout。
-pub struct StableDropout {
-    _drop_prob: f64,
-    _count: usize,
-}
-
-impl StableDropout {
-    pub fn new(drop_prob: f64) -> Self {
-        Self {
-            _drop_prob: drop_prob,
-            _count: 0,
-        }
-    }
-
-    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        Ok(x.clone())
-    }
-}
+mod layers;
+pub use layers::{HiddenActLayer, StableDropout};
 
 pub struct DebertaV2Embeddings {
     device: Device,
@@ -1409,3 +1308,4 @@ impl DebertaV2ContextPooler {
         self.config.pooler_hidden_size.context("DebertaV2ContextPooler cannot return output_dim (pooler_hidden_size) since it is not specified in the model config")
     }
 }
+
