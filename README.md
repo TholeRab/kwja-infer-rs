@@ -57,3 +57,42 @@ tools\package-release.cmd --skip-build     :: 只出包，用现有 target\relea
 
 **★不要用 PowerShell 写这份说明**：它按系统 ANSI（本机 cp936）读 UTF-8 模板，
 中文会被读坏再写坏（实测过一次，整份说明变成乱码）。必须显式 utf-8。
+
+## 素材装配（本仓只存代码）
+
+`assets/` 约 5.2 GB，**不进 git**。它每一份都能重新获取：
+
+| 目录 | 体积 | 来源 |
+| --- | --- | --- |
+| `models/` | 2.6 GB | HuggingFace `ku-nlp/kwja-checkpoints`（版本 `v2.4`），本项目导出 |
+| `cuda/` | 1.6 GB | torch `cu126` wheel 里的 `torch/lib/` |
+| `ort/` | 389 MB | `onnxruntime-gpu==1.23.2` wheel |
+| `dicts/` | 83 MB | `kwja` 包自带的 `resource/jumandic` |
+| `tokenizers/` | 3.2 MB | HuggingFace `ku-nlp/deberta-v2-base-japanese(-char-wwm)` |
+
+```bash
+pip install kwja==2.6.0 onnxruntime-gpu==1.23.2 transformers huggingface_hub
+pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+python tools/fetch-assets.py                  # 全部
+python tools/fetch-assets.py --only tokenizers  # 只拉分词器（3 MB，不需要 GPU）
+python tools/fetch-assets.py --only cuda        # 只拷 CUDA 运行库
+```
+
+**国内网络**：直连 `huggingface.co` 在某些网络下会被 TLS 拦
+（实测 `schannel: CRYPT_E_NO_REVOCATION_CHECK`），用镜像：
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com python tools/fetch-assets.py --only tokenizers
+```
+
+**必须注意的两点**：
+
+1. **`models` 这一步要 CUDA GPU**。导出走 `torch.onnx.export` 的 dynamo 路径，
+   且头模块要求参数与缓冲全在同一设备，纯 CPU 导不出来。
+2. **`cuda` 这一步拷的是跑脚本那个 venv 里的 `torch/lib`**，所以 venv 必须装 cu126 版；
+   装成 CPU 版会拷到一堆没用的东西（脚本会报缺哪个 DLL）。
+
+**13 头（`heads_fused.onnx` / `dep_type.onnx`）不代跑**：
+它们在 `导出Rust侧13头ONNX.py` 里，那份脚本自带 ORT-CPU 对拍自检。
+代跑会把两套环境变量混在一起，出问题难定位，所以脚本只提示路径。

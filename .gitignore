@@ -1,15 +1,19 @@
 # Rust 构建产物
 /target
 
-# 素材（约 1.2 GB，不进 git，分发时随 exe 打包）
-# 来源与版本见 assets/SOURCE.md
+# 素材（约 5.2 GB，不进 git，用 tools/fetch-assets.py 重新装配）
+# 来源与版本见 assets/SOURCE.md；装配步骤见 README「素材装配」
 /assets/models/
 /assets/ort/
 /assets/tokenizers/
 /assets/cuda/
 /assets/dicts/
+# fetch-assets.py 的中间产物：HF 缓存与 ckpt 落地
+/assets/_hfcache/
+/assets/_ckpt/
 
 # 提交说明临时文件（曾经被 git add -A 误收两次）
 /_msg*.txt
 /tmp_*.py
 link-tmp/
+__pycache__/
