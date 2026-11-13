@@ -101,6 +101,18 @@ fn word_knp_ch1_matches() {
     run_case("char_stage_ch1.txt", "word_knp_ch1.txt", "第 1 章 KNP");
 }
 
+/// 分级闸：3 章 / 6 章。窗口数分别约 250 / 640，秒级到分钟级，
+/// 用来在改动的第一时间发现回归，不必每次等到整书（4691 窗）。
+#[test]
+fn word_knp_three_chapters_match() {
+    run_case("char_stage_3ch.txt", "word_knp_3ch.txt", "3 章 KNP");
+}
+
+#[test]
+fn word_knp_six_chapters_match() {
+    run_case("char_stage_6ch.txt", "word_knp_6ch.txt", "6 章 KNP");
+}
+
 #[test]
 fn word_knp_whole_book_matches() {
     run_case("char_stage_all.txt", "word_knp_all.txt", "整书 KNP");

@@ -9,6 +9,7 @@
 //! logits 的行/列都是**窗内词素下标**：row = anaph、col = cand；
 //! special 列（6 个，[ROOT] 除外）无条件对全部词素行放开。
 
+use rayon::prelude::*;
 use crate::morpheme_build::OrderedFeats;
 
 /// `flat_cohesion._is_target`。
@@ -45,7 +46,9 @@ pub struct CohesionDoc<'a> {
 }
 
 /// cohesion 行取数闭包：`(anaph 行, gather 列) → (列数 × 通道数) 的原始 logits`。
-pub type CohesionRowFn<'a> = &'a dyn Fn(usize, &[usize]) -> Vec<Vec<f32>>;
+/// ★必须是 `+ Sync`：cohesion 的 101 个行彼此独立，
+///   串行算只用 1 个核，而它独占整窗 57% 的时间。
+pub type CohesionRowFn<'a> = &'a (dyn Fn(usize, &[usize]) -> Vec<Vec<f32>> + Sync);
 
 /// `add_cohesion_plain`。
 ///
@@ -96,12 +99,24 @@ pub fn add_cohesion(
     }
     let _ = num_rels;
 
+    // ★阶段一：并行算全部行。
+    //   行与行之间只读共享（source/target 投影结果），没有数据依赖，
+    //   是这里唯一足够大的并行粒度（每行 106 列 × 9 rel × 768 维）。
+    //   先前只并行「头与头之间」，cohesion 这 57% 的时间始终单线程，
+    //   所以 CPU 占用只有四成。
+    //
+    //   ★顺序不变：用 par_iter().map().collect() 保序，结果下标与串行逐一对应。
+    let all_rows: Vec<Vec<Vec<f32>>> = (0..b)
+        .into_par_iter()
+        .map(|bi| row_logits(doc.bp_head_gi[bi], &gather))
+        .collect();
+
+    // ★阶段二：串行解码（掩码 + argmax）。
+    //   argmax 平局取首个，顺序是语义的一部分，这里必须串行。
     let mut out = Vec::new();
-    for bi in 0..b {
+    for (bi, rows) in all_rows.into_iter().enumerate() {
         let head_gi = doc.bp_head_gi[bi];
         let feats = &doc.bp_feats[bi];
-        // 同一行被多个任务共用，取一次
-        let rows = row_logits(head_gi, &gather);
         for (task, rel, channel) in &rel_channels {
             if restrict_target && !is_target(task2name(task), feats) {
                 continue;

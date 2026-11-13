@@ -11,6 +11,7 @@
 //!    （缓冲句用**首次那窗**的结构，坐标平移对齐）→ cohesion/discourse
 //! 5. 缓冲：首窗定稿（first-window-wins），按插入序渲染 KNP
 
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -114,12 +115,27 @@ impl WordPredictor {
         )?;
 
         let mut buf = Buffer::default();
+        let dbg = std::env::var("KWJA_TIMING").is_ok();
+        let (mut t_proc, mut t_abs) = (0.0f64, 0.0f64);
         for window in &windows {
-            if let Some(out) = self.process_window(encoder, window)? {
+            let t0 = std::time::Instant::now();
+            let out = self.process_window(encoder, window)?;
+            let t1 = std::time::Instant::now();
+            if let Some(out) = out {
                 buf.absorb(out, &self.tables);
             }
+            if dbg {
+                t_proc += (t1 - t0).as_secs_f64() * 1000.0;
+                t_abs += t1.elapsed().as_secs_f64() * 1000.0;
+            }
         }
-        Ok(buf.render(&self.tables))
+        let t2 = std::time::Instant::now();
+        let rendered = buf.render(&self.tables);
+        if dbg {
+            eprintln!("TIMING process_window {t_proc:.1} ms / absorb {t_abs:.1} ms / render {:.1} ms",
+                t2.elapsed().as_secs_f64() * 1000.0);
+        }
+        Ok(rendered)
     }
 
     /// 一个窗口：编码 → 前向 → 解码 → 组装。超长窗返回 `None`
@@ -133,7 +149,13 @@ impl WordPredictor {
         let surfs = window.surfs();
         let lemmas = window.lemmas();
         let n_morphemes = surfs.len();
+        let dbg4 = std::env::var("KWJA_TIMING").is_ok();
+        let t_tok = std::time::Instant::now();
         let encoding = self.tokenizer.encode_window(&surfs)?;
+        if dbg4 {
+            eprintln!("      tokenize {:.1} ms", t_tok.elapsed().as_secs_f64() * 1000.0);
+        }
+        let t_enc = std::time::Instant::now();
         let n_specials = self.tables.dataset_special_tokens().len();
         // 超长窗：word_inference.py:118-121 warning + continue
         if encoding.num_tokens > self.max_seq_length - n_specials {
@@ -167,8 +189,49 @@ impl WordPredictor {
             })
             .collect();
 
-        // ---- 读音：token 级隐状态 → argmax → 词级归并（word.py:148）----
-        let reading_logits = self.heads.reading.logits(&hidden_rows);
+        // ---- 读音 + 其余头：一个并行组 ----
+        // ★reading 吃 hidden_rows、其余头吃 pooled，互不依赖；
+        //   reading 有 12907 个输出类别，单跑就 85 ms，是组里最大的一块。
+        //   组内只算 logits/概率，argmax 与后续归并留在组外串行做——
+        //   那些依赖前一步结果，并行没有意义。
+        let h = &self.heads;
+        // ★九个头的耗时不均匀（reading 85 ms、bp_feature 109 ms、其余 6–20 ms），
+        //   二叉 join 会把大块和小块切到一起，rayon 只能按切分树并行，
+        //   实测 CPU 只用四成。改为扁平任务表交给 par_iter，由线程池自己调度。
+        //   ★必须是 IndexedParallelIterator（用 collect 到 Vec），顺序才有保证。
+        const T_READING: usize = 0;
+        const T_POS: usize = 1;
+        const T_SUBPOS: usize = 2;
+        const T_CONJTYPE: usize = 3;
+        const T_CONJFORM: usize = 4;
+        const T_WF: usize = 5;
+        const T_NE: usize = 6;
+        const T_BF: usize = 7;
+        let outs: Vec<Vec<Vec<f32>>> = (0..8usize)
+            .into_par_iter()
+            .map(|t| match t {
+                T_READING => h.reading.logits(&hidden_rows),
+                T_POS => h.pos.logits(&pooled),
+                T_SUBPOS => h.subpos.logits(&pooled),
+                T_CONJTYPE => h.conjtype.logits(&pooled),
+                T_CONJFORM => h.conjform.logits(&pooled),
+                T_WF => h.word_feature.probabilities(&pooled),
+                T_NE => h.ne.logits(&pooled),
+                T_BF => h.base_phrase_feature.probabilities(&pooled),
+                _ => unreachable!(),
+            })
+            .collect();
+        let reading_logits = &outs[T_READING];
+        let wf_prob = &outs[T_WF];
+        let ne_logits = &outs[T_NE];
+        let bf_prob = &outs[T_BF];
+        let attrs = get_morpheme_attribute_predictions(
+            &outs[T_POS][..n_morphemes],
+            &outs[T_SUBPOS][..n_morphemes],
+            &outs[T_CONJTYPE][..n_morphemes],
+            &outs[T_CONJFORM][..n_morphemes],
+        );
+
         let reading_names: Vec<&str> = reading_logits
             .iter()
             .map(|row| self.tables.id2reading[argmax(row)].as_str())
@@ -186,25 +249,13 @@ impl WordPredictor {
             (&self.tables.unk, &self.tables.id),
         );
 
-        // ---- 四路属性（掩码 argmax）----
-        let pos_logits = self.heads.pos.logits(&pooled);
-        let subpos_logits = self.heads.subpos.logits(&pooled);
-        let conjtype_logits = self.heads.conjtype.logits(&pooled);
-        let conjform_logits = self.heads.conjform.logits(&pooled);
-        let attrs = get_morpheme_attribute_predictions(
-            &pos_logits[..n_morphemes],
-            &subpos_logits[..n_morphemes],
-            &conjtype_logits[..n_morphemes],
-            &conjform_logits[..n_morphemes],
-        );
-
-        // ---- 词素素性 / NE / 基本句素性 ----
-        let wf_prob = self.heads.word_feature.probabilities(&pooled);
-        let ne_logits = self.heads.ne.logits(&pooled);
-        let bf_prob = self.heads.base_phrase_feature.probabilities(&pooled);
 
         // ---- 组装词素（词典/jinf/同形词；readings 即模型读音，同时用于
         //      意味素性查找与 KNP 读方字段）----
+        if dbg4 {
+            eprintln!("      encoder+heads {:.1} ms", t_enc.elapsed().as_secs_f64() * 1000.0);
+        }
+        let t_build = std::time::Instant::now();
         let mut flat = build_morphemes(
             &self.jumandic,
             &self.jinf,
@@ -220,6 +271,9 @@ impl WordPredictor {
             },
         );
 
+        if dbg4 {
+            eprintln!("      build_morphemes {:.1} ms", t_build.elapsed().as_secs_f64() * 1000.0);
+        }
         // ---- 句区间与目标句 ----
         let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(window.sentences.len());
         {
@@ -234,9 +288,29 @@ impl WordPredictor {
         let sids: Vec<String> = window.sentences.iter().map(|s| strip_subdoc(&s.sid)).collect();
 
         // ---- 切分 ----
+        let t_chunk = std::time::Instant::now();
         let mut chunks = chunk_plain(&mut flat, &ranges, &wf_prob, &self.tables.word_features);
+        if dbg4 {
+            eprintln!("      chunk_plain {:.1} ms", t_chunk.elapsed().as_secs_f64() * 1000.0);
+        }
+        let t_ne = std::time::Instant::now();
 
         // ---- NE（只作用目标句）----
+        //
+        // ★掩码是**整窗全部目标句**，不是当前这一句。
+        //   Python 侧的 ne_mask 来自 target_mask，按 analysis_target_morpheme_indices
+        //   一次性标满（word_inference.py:175-177、:233），Viterbi 跑**一次**。
+        //   原先这里逐句重建掩码、逐句跑 Viterbi，于是每句都被当成「窗口里唯一的目标段」，
+        //   解码路径就变了：一个窗只有一个目标句时两者恰好等价（第 1 章没暴露），
+        //   一窗多个目标句时就多报实体——3 章闸实测「昨日」多出 <NE:DATE>。
+        let mut ne_mask = vec![false; self.max_seq_length];
+        for (si, tgt) in tgt_flags.iter().enumerate() {
+            if *tgt {
+                let (lo, hi) = ranges[si];
+                ne_mask[lo..hi].fill(true);
+            }
+        }
+        let ne_preds = viterbi_decode(std::slice::from_ref(&ne_logits), &[ne_mask], &self.crf);
         for (si, tgt) in tgt_flags.iter().enumerate() {
             if !tgt {
                 continue;
@@ -248,11 +322,7 @@ impl WordPredictor {
                     bp_of_ms[mi] = bpi;
                 }
             }
-            // NE 掩码 = 目标句词素
-            let mut ne_mask = vec![false; self.max_seq_length];
-            ne_mask[lo..hi].fill(true);
-            let preds = viterbi_decode(std::slice::from_ref(&ne_logits), &[ne_mask], &self.crf);
-            let rows = add_ne(&flat, &bp_of_ms, &preds[0], lo, hi, &self.tables.ne_tags);
+            let rows = add_ne(&flat, &bp_of_ms, &ne_preds[0], lo, hi, &self.tables.ne_tags);
             for (bpi, key, val) in rows {
                 chunks[si]
                     .phrases
@@ -284,6 +354,10 @@ impl WordPredictor {
             );
         }
 
+        if dbg4 {
+            eprintln!("      NE+bp_features {:.1} ms", t_ne.elapsed().as_secs_f64() * 1000.0);
+        }
+        let t_dep = std::time::Instant::now();
         // ---- 依存（只作用目标句；topk＋类型＋成环回退）----
         // ★[ROOT] 在 special_tokens 里的位置是**第 6 个**（[著者] [読者] [不特定:人]
         //   [不特定:物] [NULL] [NA] [ROOT]），不是第 0 个。Python 侧取的是
@@ -309,18 +383,31 @@ impl WordPredictor {
             // 每个主辞行：掩码 → topk 候选 → 类型 argmax
             let mut dep_preds: Vec<Vec<DepCandidate>> = vec![Vec::new(); self.max_seq_length];
             let mask = dependency_mask(&ranges, si, root_gi, self.max_seq_length);
-            for &hg in &head_gis {
-                let row = dep_proj.row(hg);
-                let mut masked: Vec<f32> = Vec::with_capacity(self.max_seq_length);
-                let row_mask = &mask[hg * self.max_seq_length..(hg + 1) * self.max_seq_length];
-                for (j, &ok) in row_mask.iter().enumerate() {
-                    masked.push(if ok { row[j][0] } else { kwja_heads::mask_tables::MASKED });
-                }
-                for parent_gi in topk_indices(&masked, self.tables.dependency_topk) {
-                    let dtype =
-                        self.heads.dependency_type.predict_pair(&pooled[hg], &pooled[parent_gi]);
-                    dep_preds[hg].push(DepCandidate { parent_gi, dep_type_idx: dtype });
-                }
+            // ★行与行独立，并行算（dependency 单窗 70–800 ms，是这里最大的一块）。
+            //   par_iter 保序，dep_preds 的下标与串行一致。
+            let rows: Vec<(usize, Vec<DepCandidate>)> = head_gis
+                .par_iter()
+                .map(|&hg| {
+                    let row = dep_proj.row(hg);
+                    let mut masked: Vec<f32> = Vec::with_capacity(self.max_seq_length);
+                    let row_mask =
+                        &mask[hg * self.max_seq_length..(hg + 1) * self.max_seq_length];
+                    for (j, &ok) in row_mask.iter().enumerate() {
+                        masked.push(if ok { row[j][0] } else { kwja_heads::mask_tables::MASKED });
+                    }
+                    let mut cands = Vec::new();
+                    for parent_gi in topk_indices(&masked, self.tables.dependency_topk) {
+                        let dtype = self
+                            .heads
+                            .dependency_type
+                            .predict_pair(&pooled[hg], &pooled[parent_gi]);
+                        cands.push(DepCandidate { parent_gi, dep_type_idx: dtype });
+                    }
+                    (hg, cands)
+                })
+                .collect();
+            for (hg, cands) in rows {
+                dep_preds[hg] = cands;
             }
             let (parents, dtypes) = add_dependency(
                 &bps,
@@ -332,6 +419,10 @@ impl WordPredictor {
             dep.insert(sids[si].clone(), (parents, dtypes));
         }
 
+        if dbg4 {
+            eprintln!("      dependency {:.1} ms", t_dep.elapsed().as_secs_f64() * 1000.0);
+        }
+        let t_proj = std::time::Instant::now();
         // ---- cohesion / discourse 的投影（解码在缓冲合并体上做）----
         let cohesion_proj = self.heads.cohesion.project(&pooled);
         let discourse_proj = self.heads.discourse.project(&pooled);
@@ -342,6 +433,9 @@ impl WordPredictor {
             sent_of_morpheme[*lo..*hi].fill(si);
         }
 
+        if dbg4 {
+            eprintln!("      projections {:.1} ms", t_proj.elapsed().as_secs_f64() * 1000.0);
+        }
         Ok(Some(WindowOut {
             flat,
             chunks,
@@ -531,6 +625,8 @@ impl Buffer {
             }
         }
 
+        let dbg2 = std::env::var("KWJA_TIMING").is_ok();
+        let tt = std::time::Instant::now();
         // 4) cohesion（目标 = 本窗目标句的基本句；候选 = 合并体全部基本句＋special）
         let tgt_sids: HashSet<&str> = stored
             .sids
@@ -584,6 +680,10 @@ impl Buffer {
             }
         }
 
+        if dbg2 {
+            eprintln!("    cohesion {:.1} ms", tt.elapsed().as_secs_f64() * 1000.0);
+        }
+        let tc = std::time::Instant::now();
         // 5) discourse（节 = 带 節-区切 的基本句；行列 = 节首词素）
         {
             let discourse_proj = out.discourse_proj.expect("discourse 投影缺失");
@@ -605,6 +705,10 @@ impl Buffer {
                     self.dis_rows.insert(key, s);
                 }
             }
+        }
+        if dbg2 {
+            eprintln!("    discourse {:.1} ms（doc_bps {}）",
+                tc.elapsed().as_secs_f64() * 1000.0, doc_bps.len());
         }
 
         // 6) 依存结果首窗定稿

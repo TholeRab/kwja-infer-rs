@@ -122,6 +122,34 @@ fn chapter1_matches_python_byte_for_byte() {
     assert_bytes_equal(&output, &expected, "单章 char 产出");
 }
 
+/// 分级闸：前 N 章。N 小时秒级返回，用来在改动的第一时间发现回归，
+/// 不必每次等到整书。
+///
+/// ★基线必须按同一文档数单独生成（`导出Rust侧阶段5基准.py --chapters N`）：
+///   doc_id 的零填充宽度是 len(str(文档数))，1 章时 "c-0-1"、长书时 "c-00-1"，
+///   从整书基线切前缀根本对不上（实测首个差异在第 10 字节，就是那一位 0）。
+fn run_tier(n_chapters: usize, fixture: &str) {
+    let started = std::time::Instant::now();
+    let texts = corpus_texts();
+    let normalized: Vec<String> = texts[..n_chapters].iter().map(|t| normalize_text(t)).collect();
+    let output = char_stage()
+        .run(&normalized, Some("c"), &mut backend())
+        .expect("char 阶段分级运行失败");
+    eprintln!("{n_chapters} 章 耗时 {:?}", started.elapsed());
+    let expected = std::fs::read_to_string(fixtures_dir().join(fixture)).expect("分级基线缺失");
+    assert_bytes_equal(&output, &expected, &format!("{n_chapters} 章 char 产出"));
+}
+
+#[test]
+fn three_chapters_match_python_byte_for_byte() {
+    run_tier(3, "char_stage_3ch.txt");
+}
+
+#[test]
+fn six_chapters_match_python_byte_for_byte() {
+    run_tier(6, "char_stage_6ch.txt");
+}
+
 #[test]
 fn whole_book_matches_python_byte_for_byte() {
     let started = std::time::Instant::now();

@@ -454,6 +454,7 @@ version = "0.1.0"
 dependencies = [
  "libm",
  "ndarray",
+ "rayon",
  "serde_json",
 ]
 
@@ -483,6 +484,7 @@ dependencies = [
  "kwja-normalize",
  "kwja-tokenizer",
  "ndarray",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

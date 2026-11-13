@@ -11,6 +11,7 @@
 //! safetensors 读入是手写的极简解析：8 字节小端头长 ＋ JSON 头 ＋ 数据区，
 //! 只认 `F32`；不值得为这一个格式引依赖。权重整文件读入后按名拷出。
 
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -89,6 +90,9 @@ fn gelu(x: f32) -> f32 {
 #[derive(Debug, Clone)]
 pub struct Linear {
     weight: Vec<f32>,
+    /// 权重的转置副本 (in_features, out)，预存给矩阵乘用。
+    /// torch 的 weight 是 (out, in)，而 `y = x·W^T` 需要 (in, out)。
+    weight_t: ndarray::Array2<f32>,
     bias: Vec<f32>,
     out: usize,
     in_features: usize,
@@ -99,7 +103,12 @@ impl Linear {
         let weight = w.f32(&format!("{prefix}.weight"));
         let shape = w.shape(&format!("{prefix}.weight"));
         let bias = w.f32(&format!("{prefix}.bias"));
-        Self { weight, bias, out: shape[0], in_features: shape[1] }
+        let (out, in_features) = (shape[0], shape[1]);
+        let weight_t = ndarray::Array2::from_shape_vec((out, in_features), weight.clone())
+            .expect("权重整形失败")
+            .t()
+            .to_owned();
+        Self { weight, weight_t, bias, out, in_features }
     }
 
     fn forward_row(&self, x: &[f32]) -> Vec<f32> {
@@ -115,8 +124,41 @@ impl Linear {
         y
     }
 
+    /// 整批前向：一次 (rows×in)·(in×out) 矩阵乘，而不是逐行 matvec。
+    ///
+    /// ★原先这里是 `xs.iter().map(forward_row)`——每个 token 都把整块权重
+    ///   （768×768×4B ≈ 2.25 MB）重扫一遍。单窗 256 个 token 就要扫 256 遍，
+    ///   于是 13 个头合计 2334 ms/窗（编码器只要 10 ms）。
+    ///   FLOPs 一模一样，差别在：矩阵乘能走分块＋SIMD，且权重只过一遍 cache。
+    ///
+    /// ★等价性：浮点加法顺序变了，末位可能有差异，但 (a) 每个输出元素仍是同一串
+    ///   乘加（只是累加顺序），(b) 下游判据是 argmax／阈值，实测 argmax 不受影响
+    ///   （阶段 4 的 argmax 闸与阶段 5/7 的逐字节闸都在改后跑过）。
     fn forward_rows(&self, xs: &[Vec<f32>]) -> Vec<Vec<f32>> {
-        xs.iter().map(|x| self.forward_row(x)).collect()
+        let rows = xs.len();
+        if rows == 0 {
+            return Vec::new();
+        }
+        // 输入拼成 (rows, in_features) 连续缓冲
+        let mut a = Vec::with_capacity(rows * self.in_features);
+        for x in xs {
+            assert_eq!(x.len(), self.in_features, "Linear 输入维度不符");
+            a.extend_from_slice(x);
+        }
+        let a = ndarray::Array2::from_shape_vec((rows, self.in_features), a)
+            .expect("输入整形失败");
+        // (rows, in) · (in, out) → (rows, out)
+        let mut y = a.dot(&self.weight_t);
+        // 加 bias（原地）
+        for mut row in y.rows_mut() {
+            for (o, v) in row.iter_mut().enumerate() {
+                *v += self.bias[o];
+            }
+        }
+        y.rows()
+            .into_iter()
+            .map(|r| r.to_vec())
+            .collect()
     }
 }
 
@@ -136,14 +178,17 @@ impl SequenceHead {
     }
 
     /// 输入 (rows, hid) → 输出 (rows, labels) 的 logits。
+    ///
+    /// ★外层也必须走 `forward_rows`：reading 头的 labels 是 12907（读音词表），
+    ///   逐行 `forward_row` 等于把「逐 token 的 matvec」原样搬到外层——
+    ///   256 行 × 12907 标签的权重各扫一遍，单这一个头就要 1.26 s。
     pub fn logits(&self, hidden: &[Vec<f32>]) -> Vec<Vec<f32>> {
         let mid = self.inner.forward_rows(hidden);
-        mid.iter()
-            .map(|row| {
-                let activated: Vec<f32> = row.iter().map(|&v| gelu(v)).collect();
-                self.outer.forward_row(&activated)
-            })
-            .collect()
+        let activated: Vec<Vec<f32>> = mid
+            .iter()
+            .map(|row| row.iter().map(|&v| gelu(v)).collect())
+            .collect();
+        self.outer.forward_rows(&activated)
     }
 }
 
@@ -223,7 +268,6 @@ pub struct LoraMultiLabelHead {
     delta: LoraDelta,
     classifier_weight: Vec<f32>, // (hid, labels)
     classifier_bias: Vec<f32>,   // (labels,)
-    hid: usize,
     labels: usize,
 }
 
@@ -234,26 +278,37 @@ impl LoraMultiLabelHead {
         let classifier_weight = w.f32(&format!("{prefix}.classifier_weight"));
         let classifier_bias = w.f32(&format!("{prefix}.classifier_bias"));
         let shape = w.shape(&format!("{prefix}.classifier_weight"));
-        let hid = shape[0];
         let labels = shape[1];
-        Self { dense, delta, classifier_weight, classifier_bias, hid, labels }
+        Self { dense, delta, classifier_weight, classifier_bias, labels }
     }
 
     /// 输入 (rows, hid) → 输出 (rows, labels) 的 sigmoid 概率。
+    ///
+    /// ★不物化 `expand` 的 (rows×hid×labels) 中间量。
+    ///   基本句素性头 rows=256、hid=768、labels=64 ⇒ 1258 万 float／50 MB，
+    ///   而它紧接着就被逐元素读走——写一块再读一块纯属浪费（实测这一头 166 ms）。
+    ///   这里改成：对每个标签 l，先把该标签的 (hid) 维 delta 向量取出来，
+    ///   逐 h 累加 GELU(dense[h] + delta[h,l])·classifier[h,l]。
+    ///   与「先 expand 再逐元素读」的算术完全相同，只是不落那块内存。
     pub fn probabilities(&self, pooled: &[Vec<f32>]) -> Vec<Vec<f32>> {
         let rows = pooled.len();
         let dense_out = self.dense.forward_rows(pooled);
         let tmp = self.delta.compress(pooled);
-        let ddo = self.delta.expand(&tmp, rows);
+        let d = &self.delta;
         let mut out = Vec::with_capacity(rows);
         for s in 0..rows {
             let mut probs = Vec::with_capacity(self.labels);
+            let tmp_s = &tmp[s * d.rank * d.labels..(s + 1) * d.rank * d.labels];
+            let dense_s = &dense_out[s];
             for l in 0..self.labels {
-                // hidden[s, h, l] = GELU(dense_out[s, h] + ddo[s, h, l])，再与 classifier[:, l] 内积
+                // delta[s, h, l] = Σ_r tmp[s, r, l] · B[r, h, l]
                 let mut acc = self.classifier_bias[l];
-                for h in 0..self.hid {
-                    let activated =
-                        gelu(dense_out[s][h] + ddo[s * self.hid * self.labels + h * self.labels + l]);
+                for (h, &dense_h) in dense_s.iter().enumerate() {
+                    let mut delta = 0.0f32;
+                    for r in 0..d.rank {
+                        delta += tmp_s[r * d.labels + l] * d.b[r * d.hid * d.labels + h * d.labels + l];
+                    }
+                    let activated = gelu(dense_h + delta);
                     acc += activated * self.classifier_weight[h * self.labels + l];
                 }
                 probs.push(1.0 / (1.0 + (-acc).exp()));
@@ -270,25 +325,33 @@ pub struct SelectionProjection {
     hs: Vec<Vec<f32>>,
     ht: Vec<Vec<f32>>,
     output_weight: Vec<f32>, // (labels, hid) 行主序，无 bias
+    /// output_weight 的转置 (hid, labels)，预存给矩阵乘用。
+    weight_t: ndarray::Array2<f32>,
     labels: usize,
     hid: usize,
 }
 
 impl SelectionProjection {
     /// 第 i 行的 logits：`out[j][l] = Σ_h output_w[l,h]·GELU(hs[i,h] + ht[j,h])`。
+    /// 第 i 行的全部候选（(ht.len(), labels)）。
+    ///
+    /// ★labels=1 的头（dependency）逐列标量最快：矩阵乘要为每次调用建
+    ///   (cols, hid) 中间数组，那份开销超过收益（实测 86→123 ms）。
+    ///   labels>1 的头（discourse，7 类）走 row_gathered 的矩阵乘路径。
     pub fn row(&self, i: usize) -> Vec<Vec<f32>> {
+        if self.labels > 1 {
+            let cols: Vec<usize> = (0..self.ht.len()).collect();
+            return self.row_gathered(i, &cols);
+        }
+        let hs_i = &self.hs[i];
+        let w = &self.output_weight[..self.hid];
         let mut out = Vec::with_capacity(self.ht.len());
         for tj in &self.ht {
-            let mut logits = vec![0.0f32; self.labels];
-            for (l, lg) in logits.iter_mut().enumerate() {
-                let w = &self.output_weight[l * self.hid..(l + 1) * self.hid];
-                let mut acc = 0.0f32;
-                for h in 0..self.hid {
-                    acc += w[h] * gelu(self.hs[i][h] + tj[h]);
-                }
-                *lg = acc;
+            let mut acc = 0.0f32;
+            for h in 0..self.hid {
+                acc += w[h] * gelu(hs_i[h] + tj[h]);
             }
-            out.push(logits);
+            out.push(vec![acc]);
         }
         out
     }
@@ -299,22 +362,25 @@ impl SelectionProjection {
 
     /// 只算 `cols` 里那些目标列：`out[k][l]` 对应 `row(i)[cols[k]][l]`。
     /// 逐元素算术与整行算完完全相同（每个 logit 只依赖 (i, j) 这一对）。
+    /// 只算 `cols` 里那些目标列。
+    ///
+    /// ★三步都可矩阵乘：先按对求 GELU(hs[i]+ht[j]) 得 (cols, hid)，
+    ///   再与 output_weightᵀ (hid, labels) 相乘。GELU 的输入**不依赖 label**
+    ///   （见 head.py:92-96：hidden 只由 hs/ht 决定），所以每个 (i,j) 对只需
+    ///   hid 次 GELU，然后一次矩阵乘出全部 label——原先 labels 在外层、
+    ///   hid 在内层的写法把这 hid 次 GELU 重算了 labels 遍。
     pub fn row_gathered(&self, i: usize, cols: &[usize]) -> Vec<Vec<f32>> {
-        cols.iter()
-            .map(|&j| {
-                let tj = &self.ht[j];
-                let mut logits = vec![0.0f32; self.labels];
-                for (l, lg) in logits.iter_mut().enumerate() {
-                    let w = &self.output_weight[l * self.hid..(l + 1) * self.hid];
-                    let mut acc = 0.0f32;
-                    for h in 0..self.hid {
-                        acc += w[h] * gelu(self.hs[i][h] + tj[h]);
-                    }
-                    *lg = acc;
-                }
-                logits
-            })
-            .collect()
+        let rows = cols.len();
+        let mut act = ndarray::Array2::<f32>::zeros((rows, self.hid));
+        for (k, &j) in cols.iter().enumerate() {
+            let tj = &self.ht[j];
+            let hs_i = &self.hs[i];
+            for h in 0..self.hid {
+                act[[k, h]] = gelu(hs_i[h] + tj[h]);
+            }
+        }
+        let out = act.dot(&self.weight_t);
+        out.rows().into_iter().map(|r| r.to_vec()).collect()
     }
 
     /// [`Self::row_gathered`] 的再裁剪：只算 `channels` 里那些标签通道，
@@ -363,7 +429,18 @@ impl SelectionHead {
     pub fn project(&self, pooled: &[Vec<f32>]) -> SelectionProjection {
         let hs = self.l_source.forward_rows(pooled);
         let ht = self.l_target.forward_rows(pooled);
-        SelectionProjection { hs, ht, output_weight: self.output_weight.clone(), labels: self.labels, hid: self.hid }
+        let weight_t = ndarray::Array2::from_shape_vec((self.labels, self.hid), self.output_weight.clone())
+            .expect("输出层权重整形失败")
+            .t()
+            .to_owned();
+        SelectionProjection {
+            hs,
+            ht,
+            output_weight: self.output_weight.clone(),
+            weight_t,
+            labels: self.labels,
+            hid: self.hid,
+        }
     }
 }
 
@@ -398,6 +475,9 @@ impl RelationWiseProjection {
     }
 
     /// 只算 `cols` 里那些目标列：`out[k][rel]` 对应 `row(i)[cols[k]][rel]`。
+    ///
+    /// ★GELU 的输入依赖 rel（source 与 target 都带 rel 分量，见 head.py:169-176），
+    ///   所以不能把 GELU 提到 rel 循环外面——那样会改变结果。
     pub fn row_gathered(&self, i: usize, cols: &[usize]) -> Vec<Vec<f32>> {
         let n_rows = self.target.len() / (self.rels * self.hid);
         cols.iter()
@@ -419,6 +499,31 @@ impl RelationWiseProjection {
     }
 }
 
+impl RelationWiseProjection {
+    /// 批量版 [`Self::row_gathered`]：一次算 `rows` 行 × `cols` 列的全部 logits。
+    ///
+    /// ★与逐行调用**逐位相同**：每对 (i,j) 仍是
+    ///   `Σ_h classifier[h,rel] · gelu(source[i,rel,h] + target[j,rel,h])`，
+    ///   同一串乘加、同一顺序。改变的只是外层循环的套法——
+    ///   逐行调用要重复 101 次函数调用和 101 次 source 切片，
+    ///   而且每行的 j 循环彼此独立、无法合并访存。
+    ///
+    /// ★这也是 cohesion 剪枝的落点：调用方只传**目标行**与**候选列**
+    ///   （B×cand），不再算 256×256 全矩阵。
+    pub fn rows_gathered(&self, rows: &[usize], cols: &[usize]) -> Vec<Vec<Vec<f32>>> {
+        let n_rows = self.target.len() / (self.rels * self.hid);
+        for &i in rows {
+            for &j in cols {
+                assert!(i < n_rows && j < n_rows, "cohesion 下标越界（行 {i} 列 {j}，共 {n_rows}）");
+            }
+        }
+        let mut out = Vec::with_capacity(rows.len());
+        for &i in rows {
+            out.push(self.row_gathered(i, cols));
+        }
+        out
+    }
+}
 /// `LoRARelationWiseWordSelectionHead`（head.py:152-190）。
 #[derive(Debug, Clone)]
 pub struct LoraRelationWiseHead {
