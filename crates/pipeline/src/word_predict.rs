@@ -20,7 +20,7 @@ use kwja_heads::forward::{RelationWiseProjection, SelectionProjection, WordHeads
 use kwja_heads::sequence_labeling::{
     get_morpheme_attribute_predictions, viterbi_decode, CrfParameters,
 };
-use kwja_tokenizer::word_side::WordTokenizer;
+use kwja_tokenizer::word_side::{WindowEncoding, WordTokenizer};
 
 use crate::chunking::{add_bp_features, add_ne, chunk_plain, BasePhrase, Chunk, Phrase};
 use crate::cohesion::{add_cohesion, CohesionDoc, RelRow};
@@ -114,26 +114,49 @@ impl WordPredictor {
             self.stride,
         )?;
 
-        let mut buf = Buffer::default();
         let dbg = std::env::var("KWJA_TIMING").is_ok();
-        let (mut t_proc, mut t_abs) = (0.0f64, 0.0f64);
+
+        // ---- 阶段一-A：编码（串行）----
+        // ★只有这里必须串行：`Encoder::run_word` 要 `&mut self`。
+        //   将来 GPU 侧把这一步换成 batch 前向，接口不变。
+        let t_prep = std::time::Instant::now();
+        let mut preps: Vec<Option<WindowPrep>> = Vec::with_capacity(windows.len());
         for window in &windows {
-            let t0 = std::time::Instant::now();
-            let out = self.process_window(encoder, window)?;
-            let t1 = std::time::Instant::now();
-            if let Some(out) = out {
-                buf.absorb(out, &self.tables);
-            }
-            if dbg {
-                t_proc += (t1 - t0).as_secs_f64() * 1000.0;
-                t_abs += t1.elapsed().as_secs_f64() * 1000.0;
-            }
+            preps.push(self.prep_window(encoder, window)?);
         }
-        let t2 = std::time::Instant::now();
+        let prep_ms = t_prep.elapsed().as_secs_f64() * 1000.0;
+
+        // ---- 阶段一-B：13 头 ＋ 切分 ＋ NE ＋ 依存（并行铺满核）----
+        // ★窗与窗之间完全独立、`&self` 不写共享状态，
+        //   任务数从「8 个头」变成「窗数 × 8」，不再受 12 线程限制。
+        let t_dec = std::time::Instant::now();
+        let outs: Vec<Option<WindowOut>> = windows
+            .par_iter()
+            .zip(preps)
+            .map(|(window, prep)| {
+                match prep {
+                    Some(p) => self.decode_window(window, p).map(Some),
+                    None => Ok(None),
+                }
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
+
+        // ---- 阶段二：按窗序合并（串行，状态依赖历史窗）----
+        let t_abs = std::time::Instant::now();
+        let mut buf = Buffer::default();
+        for out in outs.into_iter().flatten() {
+            buf.absorb(out, &self.tables);
+        }
+        let abs_ms = t_abs.elapsed().as_secs_f64() * 1000.0;
+
+        let t_render = std::time::Instant::now();
         let rendered = buf.render(&self.tables);
         if dbg {
-            eprintln!("TIMING process_window {t_proc:.1} ms / absorb {t_abs:.1} ms / render {:.1} ms",
-                t2.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "TIMING prep {prep_ms:.1} ms / decode {dec_ms:.1} ms / absorb {abs_ms:.1} ms / render {:.1} ms",
+                t_render.elapsed().as_secs_f64() * 1000.0
+            );
         }
         Ok(rendered)
     }
@@ -141,13 +164,17 @@ impl WordPredictor {
     /// 一个窗口：编码 → 前向 → 解码 → 组装。超长窗返回 `None`
     ///（上游 warning 后 `continue`——本窗不产出任何内容）。
     #[allow(clippy::too_many_lines)]
-    fn process_window(
-        &mut self,
+    /// 阶段一-A（串行）：分词 ＋ 编码器前向。
+    ///
+    /// ★只有这一段必须串行——`Encoder::run_word` 要 `&mut self`（ORT session 是独占的）。
+    ///   这也正好是 GPU 侧要批处理的那一段：将来把 N 个窗拼成 [N, seq] 一次前向，
+    ///   换的就是这个函数体，接口（输入 `&WordWindow`、输出 `WindowPrep`）不变。
+    fn prep_window(
+        &self,
         encoder: &mut dyn Encoder,
         window: &WordWindow,
-    ) -> Result<Option<WindowOut>, String> {
+    ) -> Result<Option<WindowPrep>, String> {
         let surfs = window.surfs();
-        let lemmas = window.lemmas();
         let n_morphemes = surfs.len();
         let dbg4 = std::env::var("KWJA_TIMING").is_ok();
         let t_tok = std::time::Instant::now();
@@ -175,6 +202,28 @@ impl WordPredictor {
                 seq: self.max_seq_length,
             })
             .map_err(|e| e.to_string())?;
+        if dbg4 {
+            eprintln!("      encoder {:.1} ms", t_enc.elapsed().as_secs_f64() * 1000.0);
+        }
+        Ok(Some(WindowPrep { encoding, hidden }))
+    }
+
+    /// 阶段一-B（可并行）：13 头 ＋ 切分 ＋ NE ＋ 依存候选。
+    ///
+    /// ★`&self`，不写任何共享状态，所以窗与窗之间可以铺满所有核。
+    ///   原先这段与编码绑在同一个 `&mut self` 函数里，一次只能跑一个窗，
+    ///   并行度被锁在「一个窗里的 8 个头」，8 个任务用 12 个线程，占用率上不去。
+    fn decode_window(
+        &self,
+        window: &WordWindow,
+        prep: WindowPrep,
+    ) -> Result<WindowOut, String> {
+        let WindowPrep { encoding, hidden } = prep;
+        let surfs = window.surfs();
+        let lemmas = window.lemmas();
+        let n_morphemes = surfs.len();
+        let dbg4 = std::env::var("KWJA_TIMING").is_ok();
+        let t_enc = std::time::Instant::now();
         let shape = hidden.shape();
         let (seq_len, hid) = (shape[1], shape[2]);
         let flat_hidden: Vec<f32> = hidden.as_slice().expect("encoder 输出应连续").to_vec();
@@ -436,7 +485,7 @@ impl WordPredictor {
         if dbg4 {
             eprintln!("      projections {:.1} ms", t_proj.elapsed().as_secs_f64() * 1000.0);
         }
-        Ok(Some(WindowOut {
+        Ok(WindowOut {
             flat,
             chunks,
             sids,
@@ -458,7 +507,7 @@ impl WordPredictor {
                 .map(|(i, _)| n_morphemes + i)
                 .collect(),
             sent_of_morpheme,
-        }))
+        })
     }
 }
 
@@ -531,6 +580,12 @@ fn argmax(row: &[f32]) -> usize {
         }
     }
     best
+}
+
+/// 阶段一-A 的产物：分词结果 ＋ 编码器输出。
+struct WindowPrep {
+    encoding: WindowEncoding,
+    hidden: ndarray::Array3<f32>,
 }
 
 /// 窗口处理产物（缓冲吸收后仅留渲染所需字段）。
