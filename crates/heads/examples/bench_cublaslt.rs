@@ -1,5 +1,5 @@
-//! GPU 赛道 PoC：cuBLASLt 直调 vs ORT CUDA 同形状（阶段一/poc-ort-gemm.py）。
-//! 判据：≥1.3× 于 ORT 才继续（提案-手写定点推理核-20261113 §四）。
+//! cuBLASLt 直调 vs ORT CUDA 同形状对比。
+//! 判据：需快于 ORT 1.3 倍以上才值得继续。
 #![allow(non_camel_case_types)]
 
 use std::ffi::c_void;
@@ -139,8 +139,8 @@ fn main() {
             assert_eq!(desc_create(&mut desc, COMPUTE_32F, CUDA_R_32F), 0);
             assert_eq!(desc_attr(desc, ATTR_TRANSA, &OP_T as *const u32 as Ptr, 4), 0);
             assert_eq!(desc_attr(desc, ATTR_TRANSB, &OP_N as *const u32 as Ptr, 4), 0);
-            // W 行主序 (N,K)＝列主序 (K,N)；X 行主序 (M,K)＝列主序 (K,M)；
-            // D 行主序 (M,N)＝列主序 (N,M)。列主序视角算 D=W·X，免转置。
+            // W 行主序 (N,K)=列主序 (K,N)；X 行主序 (M,K)=列主序 (K,M)；
+            // D 行主序 (M,N)=列主序 (N,M)。列主序视角算 D=W·X，免转置。
             let mut la: Ptr = std::ptr::null_mut();
             let mut lb: Ptr = std::ptr::null_mut();
             let mut ld: Ptr = std::ptr::null_mut();

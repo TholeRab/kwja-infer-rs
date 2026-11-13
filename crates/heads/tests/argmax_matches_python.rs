@@ -1,8 +1,7 @@
-//! 阶段 4 闸：heads 的逐 token 解码与 Python 全等。
+//! heads 的逐 token 解码与 Python 参考实现全等。
 //!
-//! fixtures 由 导出工具/导出Rust侧阶段4基准.py 用本仓 Python 实现
-//! （get_morpheme_attribute_predictions／CRF.viterbi_decode／torch.topk／softmax）
-//! 现场算出；随机数固定种子。
+//! fixtures 随机数固定种子，期望值由参考 Python 实现
+//! （掩码 argmax、CRF Viterbi、topk、softmax）现场算出。
 
 use kwja_heads::lora_multi_labeling::{
     closes_base_phrase, closes_phrase, multi_label_flags, WORD_FEATURE_BP_END, WORD_FEATURE_PH_END,

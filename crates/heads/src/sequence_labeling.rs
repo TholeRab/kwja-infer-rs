@@ -1,14 +1,12 @@
 //! 逐 token 分类头的解码：pos／subpos／conjtype／conjform 的掩码 argmax
-//! （`callbacks/utils.py:85-122` 逐 id 复刻）与 NE 头的 CRF Viterbi
-//! （`modules/components/crf.py:112-154` 逐 id 复刻）。
+//! 与 NE 头的 CRF Viterbi，均逐 id 复刻 Python 参考实现。
 //!
-//! 必须照抄的三处细节：
+//! 三处必须保持的解码细节：
 //! 1. subpos／conjform 的 argmax 不能直接取：先用 pos（conjtype）结果把非法标签的
-//!    logits 掩成 `MASKED`（-1024.0）再取（`utils.py:97-100`、`:107-111`）；
+//!    logits 掩成 `MASKED`（-1024.0）再取；
 //! 2. 非活用词素：conjtype 改判 `"*"`，conjform 直接取表值 `CONJFORM_STAR_ID`
-//!    （`utils.py:112-115`）——漏掉这个改判，KNP 里的活用形就会错；
-//! 3. CRF 的回溯区间是 `history[head-min : tail-min][::-1]`，掩码外用 `"O"` 填充
-//!    （`crf.py:143-150`）。
+//!    ——漏掉这个改判，下游解析的活用形就会错；
+//! 3. CRF 的回溯区间是 `history[head-min : tail-min][::-1]`，掩码外用 `"O"` 填充。
 
 use crate::mask_tables::{
     CONJTYPE_CONJFORM_ALLOWED, CONJFORM_TAGS, CONJFORM_STAR_ID, CONJTYPE_STAR_INDEX, INFLECTABLE,
@@ -38,11 +36,11 @@ pub struct MorphemeAttributePredictions {
     pub conjform: Vec<usize>,
 }
 
-/// `get_morpheme_attribute_predictions`（utils.py:85-122）。
+/// 四路词素属性的掩码 argmax 预测。
 ///
 /// # Panics
-/// 四路 logits 行数不一致、或掩码后 argmax 落在非法标签上（对应 Python 的
-/// `assert`）时 panic——那属于程序错误而非数据错误。
+/// 四路 logits 行数不一致、或掩码后 argmax 落在非法标签上时 panic——
+/// 那属于程序错误而非数据错误。
 pub fn get_morpheme_attribute_predictions(
     pos_logits: &[Vec<f32>],
     subpos_logits: &[Vec<f32>],
@@ -107,7 +105,7 @@ pub struct CrfParameters {
     pub o_index: usize,
 }
 
-/// `CRF.viterbi_decode`（crf.py:112-154）。
+/// CRF Viterbi 解码。
 ///
 /// `emissions[b][j][t]`、`mask[b][j]`。掩码外的 token 填 `"O"`。
 /// `max(dim=1)` 的并列取首与 `score[i].max(dim=0)` 的并列取首都由 [`argmax`] 保证。

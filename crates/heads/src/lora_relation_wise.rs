@@ -1,7 +1,7 @@
-//! relation-wise 头的解码：dependency 的 topk（`modules/word.py:228`）与
-//! discourse 的 softmax＋阈值回落（`modules/word.py:213-216`）。
+//! relation-wise 头的解码：dependency 的 topk 与
+//! discourse 的 softmax 加阈值回落。
 //!
-//! discourse 的阈值来自 `configs/word_module.yaml`（`discourse_threshold: 0.0`）；
+//! discourse 的阈值取 0.0；
 //! 配置值为 0.0 时阈值分支实际不会触发（softmax 概率非负），但回落逻辑必须保留——
 //! 配置一变它就是行为的一部分。
 
@@ -16,7 +16,7 @@ pub fn topk_indices(row: &[f32], k: usize) -> Vec<usize> {
     order
 }
 
-/// (batch, seq, seq) 的 dependency logits → 每个 token 的前 k 个母节候选。
+/// (batch, seq, seq) 的 dependency logits：每个 token 取前 k 个母节候选。
 #[must_use]
 pub fn topk_dim2(logits: &[Vec<Vec<f32>>], k: usize) -> Vec<Vec<Vec<usize>>> {
     logits

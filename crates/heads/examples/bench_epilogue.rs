@@ -1,7 +1,7 @@
-//! 后续：cuBLASLt epilogue 融合（bias / bias+GELU 进 matmul）能不能比「Sgemm＋自写核」更快。
+//! cuBLASLt epilogue 融合（bias / bias+GELU 进 matmul）对比 Sgemm 加自写核的耗时。
 //! 用法：cargo run --release -p kwja-heads --example bench_epilogue
-//! 同时用小形状做 GELU 口味鉴定：Lt 的 GELU 是 erf 版还是 tanh 近似版——
-//! 这决定融合会不会碰字节闸（KWJA 图里是 erf 版）。
+//! 同时用小形状核对 Lt 的 GELU 是 erf 版还是 tanh 近似版（参考图是 erf 版），
+//! 近似版会有数值差异。
 #![allow(non_camel_case_types)]
 
 use std::ffi::{c_char, c_void};
@@ -230,7 +230,7 @@ fn main() {
             assert_eq!(cuda_memcpy(dx, x.as_ptr() as *const c_void, m * k * 4, H2D), 0);
             assert_eq!(cuda_memcpy(db, b.as_ptr() as *const c_void, n * 4, H2D), 0);
 
-            // ---- A 路（现生产）：Sgemm＋自写核 ----
+            // A 路（现生产）：Sgemm+自写核
             let sgemm_once = || {
                 let alpha = 1.0f32;
                 let beta = 0.0f32;
@@ -262,7 +262,7 @@ fn main() {
             assert_eq!(cuda_sync(), 0);
             let a_ms = t.elapsed().as_secs_f64() * 1000.0 / 50.0;
 
-            // ---- B 路：Lt epilogue 融合 ----
+            // B 路：Lt epilogue 融合
             let mut desc: Ptr = std::ptr::null_mut();
             assert_eq!(desc_create(&mut desc, COMPUTE_32F, CUDA_R_32F), 0);
             let op_t = OP_T;
@@ -324,7 +324,7 @@ fn main() {
             assert_eq!(cuda_sync(), 0);
             let b_ms = t.elapsed().as_secs_f64() * 1000.0 / 50.0;
 
-            // ---- 正确性：A 路结果（已回读）对 CPU 两种 GELU 口味 ----
+            // 正确性：A 路结果（已回读）对 CPU 两种 GELU 口味
             if c.gelu && m <= 16 {
                 let mut d_erf = 0.0f32;
                 let mut d_tanh = 0.0f32;

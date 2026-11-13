@@ -1,4 +1,4 @@
-//! E3 微基准：融合图多窗拼批的每窗耗时（B=1/2/4/8/16）。
+//! 微基准：融合图多窗拼批的每窗耗时（B=1/2/4/8/16）。
 //! 随机输入不代表数值，只代表形状与计算量；跑法：
 //!   cargo build --release -p kwja-heads --example bench_fused
 //!   PATH=torch/lib… target/release/examples/bench_fused.exe

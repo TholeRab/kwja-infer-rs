@@ -1,4 +1,4 @@
-//! E5 调试：同一输入分别过 ORT 融合图与 cuBLAS 直调，逐头比最大差与 argmax。
+//! 调试：同一输入分别过 ORT 融合图与 cuBLAS 直调，逐头比最大差与 argmax。
 //! 用法：cargo run --release -p kwja-heads --example check_cublas
 use kwja_heads::cublas_heads::CublasHeads;
 use kwja_heads::gpu_heads::GpuHeads;

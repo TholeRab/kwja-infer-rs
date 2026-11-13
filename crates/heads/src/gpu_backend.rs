@@ -1,4 +1,4 @@
-//! 头前向的 GPU 后端选择——ORT 融合图（E1 主线）或 cuBLAS 直调（E5 分支）。
+//! 头前向的 GPU 后端选择：ORT 融合图或 cuBLAS 直调。
 //!
 //! 两个后端的 `forward_fused` / `dep_type_argmax` 输出口径一致（FusedHeadsOutput），
 //! 调用方（word_predict）不感知差异。默认仍是 ORT；`KWJA_BACKEND=cublas` 切本枚举的

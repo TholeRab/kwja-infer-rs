@@ -1,14 +1,14 @@
-//! 三张掩码表（阶段 4 落地）：由 Python 侧脚本（导出工具/导出Rust侧阶段4基准.py）
-//! 从 kwja.utils.constants 一次性导出成静态数组，不在 Rust 里重新推导。**勿手改**。
-//! 规模实测：POS_TAG_SUBPOS_TAG2SUBPOS_ID 展开 42 个 (pos, subpos) 对（外层 14 键）；
+//! 三张掩码表：导出脚本一次性生成的静态数组，与权重同源，
+//! 不在 Rust 里重新推导。勿手改。
+//! 规模：POS_TAG_SUBPOS_TAG2SUBPOS_ID 展开 42 个 (pos, subpos) 对（外层 14 键）；
 //! CONJTYPE_TAG_CONJFORM_TAG2CONJFORM_ID 展开 639 个 (conjtype, conjform) 对（外层 33 键）；
 //! INFLECTABLE 7 条。
 
-/// word_normalization／heads 共用的掩码值（constants.py:11）。
+/// word_normalization／heads 共用的掩码值。
 pub const MASKED: f32 = -1024.0;
 
 
-/// POS_TAGS（constants.py:283）。
+/// POS_TAGS。
 pub const POS_TAGS: [&str; 14] = [
     "特殊",
     "動詞",
@@ -26,7 +26,7 @@ pub const POS_TAGS: [&str; 14] = [
     "接尾辞",
 ];
 
-/// SUBPOS_TAGS（constants.py:342）。
+/// SUBPOS_TAGS。
 pub const SUBPOS_TAGS: [&str; 35] = [
     "*",
     "句点",
@@ -65,7 +65,7 @@ pub const SUBPOS_TAGS: [&str; 35] = [
     "動詞性接尾辞",
 ];
 
-/// CONJTYPE_TAGS（constants.py:353）。
+/// CONJTYPE_TAGS。
 pub const CONJTYPE_TAGS: [&str; 33] = [
     "*",
     "母音動詞",
@@ -102,7 +102,7 @@ pub const CONJTYPE_TAGS: [&str; 33] = [
     "動詞性接尾辞うる型",
 ];
 
-/// CONJFORM_TAGS（constants.py:1079）。
+/// CONJFORM_TAGS。
 pub const CONJFORM_TAGS: [&str; 81] = [
     "*",
     "語幹",
@@ -187,7 +187,7 @@ pub const CONJFORM_TAGS: [&str; 81] = [
     "文語音便条件形",
 ];
 
-/// 每个 pos（下标＝POS_TAGS 下标）允许的 subpos 下标集合（升序）。
+/// 每个 pos（下标=POS_TAGS 下标）允许的 subpos 下标集合（升序）。
 pub static POS_SUBPOS_ALLOWED: [&[usize]; 14] = [
     &[1, 2, 3, 4, 5, 6],
     &[0],
@@ -206,7 +206,7 @@ pub static POS_SUBPOS_ALLOWED: [&[usize]; 14] = [
 ];
 
 
-/// 每个 conjtype（下标＝CONJTYPE_TAGS 下标）允许的 conjform 下标集合（升序）。
+/// 每个 conjtype（下标=CONJTYPE_TAGS 下标）允许的 conjform 下标集合（升序）。
 pub static CONJTYPE_CONJFORM_ALLOWED: [&[usize]; 33] = [
     &[0],
     &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
@@ -244,7 +244,7 @@ pub static CONJTYPE_CONJFORM_ALLOWED: [&[usize]; 33] = [
 ];
 
 
-/// INFLECTABLE 的 (pos 下标, subpos 下标) 对（constants.py:1082-1087）。
+/// INFLECTABLE 的 (pos 下标, subpos 下标) 对。
 pub const INFLECTABLE: [(usize, usize); 7] = [
     (1, 0),
     (2, 0),
@@ -270,7 +270,7 @@ pub const NE_O_INDEX: usize = 0;
 pub const DISCOURSE_RELATION_COUNT: usize = 7;
 pub const DISCOURSE_NONE_INDEX: usize = 0;
 
-/// WORD_FEATURES（constants.py:1092）：word_feature 多标签头的 5 类。
+/// WORD_FEATURES：word_feature 多标签头的 5 类。
 pub const WORD_FEATURES: [&str; 5] = [
     "基本句-主辞",
     "基本句-区切",
@@ -279,7 +279,7 @@ pub const WORD_FEATURES: [&str; 5] = [
     "用言表記末尾",
 ];
 
-/// BASE_PHRASE_FEATURES（constants.py:1163）：base_phrase_feature 多标签头的 64 类。
+/// BASE_PHRASE_FEATURES：base_phrase_feature 多标签头的 64 类。
 pub const BASE_PHRASE_FEATURES: [&str; 64] = [
     "用言:動",
     "用言:形",

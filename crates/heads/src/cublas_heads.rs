@@ -1,15 +1,16 @@
-//! 13 个头的 cuBLAS 直调前向（GPU 赛道 PoC 过闸后的全线实现）。
+//! 13 个头的 cuBLAS 直调前向（GPU 路径）。头数口径：dep_type 在此单列，共 13 个；
+//! gpu_heads 的融合图不含 dep_type，故为 12 个。
 //!
-//! 权重来自 `导出cuBLAS权重.py` 落盘的 `models/cublas/{weights.bin, manifest.json}`，
-//! 与 heads_fused.onnx 的初始化器逐位一致（LoRA delta 已按 阶段一/验-cublas分解.py
-//! 验证过的口径预折算）。计算结构按 查onnx图.py 的节点序列复刻：
-//! - reading：hidden 进 768→768 GELU →768→12907；
-//! - pos/subpos/conjtype/conjform/ne：pooled 进 768→768 GELU →768→C；
-//! - wf/bpf：base 线性 + LoRA delta GEMM → 广播相加 → GELU → classifier→sigmoid；
+//! 权重来自 models/cublas/{weights.bin, manifest.json}，
+//! 与 heads_fused.onnx 的初始化器逐位一致（LoRA delta 已预折算）。
+//! 计算结构按融合图节点序列实现：
+//! - reading：hidden 经 Linear(768,768)+GELU+Linear(768,12907)；
+//! - pos/subpos/conjtype/conjform/ne：pooled 经 Linear(768,768)+GELU+Linear(768,C)；
+//! - wf/bpf：base 线性加 LoRA delta，广播相加后过 GELU，再过 classifier 与 sigmoid；
 //! - dep/discourse：单层线性；cohesion：单层线性 + per-rel LoRA 广播相加；
-//! - dep_type：(P,1536) → 1536→1536 GELU → 1536→4，逐行 argmax。
-//! 逐元素差已验为 fp32 GEMM 噪声量级、argmax/阈值零翻转（阶段一/验-cublas分解.py 与
-//! examples/check_cublas.rs 逐头对照）。
+//! - dep_type：输入 (P,1536)，经 Linear(1536,1536)+GELU+Linear(1536,4)，逐行 argmax。
+//! 与 ORT 路径的逐元素差为 fp32 GEMM 噪声量级，argmax/阈值零翻转
+//! （examples/check_cublas.rs 逐头对照）。
 //! 运行期 LoadLibraryW 载 torch/lib 的 cublas/cudart 与 nvrtc、驱动 nvcuda，
 //! 免构建期 CUDA 工具链；核函数按设备算力即时编译（sm_xx），不硬编码卡型。
 //! 传输纪律：进卡/回读都走页锁定（pinned）暂存；跨 CPU 的 13 路输出合进一块
@@ -30,7 +31,7 @@ const D2H: i32 = 2;
 const ATTR_CC_MAJOR: i32 = 75;
 const ATTR_CC_MINOR: i32 = 76;
 
-// ---- cudart ----
+// cudart 符号
 type FnMalloc = unsafe extern "system" fn(*mut Ptr, usize) -> i32;
 type FnMemcpy = unsafe extern "system" fn(Ptr, *const c_void, usize, i32) -> i32;
 type FnMemset = unsafe extern "system" fn(Ptr, i32, usize) -> i32;
@@ -39,7 +40,7 @@ type FnHostFree = unsafe extern "system" fn(Ptr) -> i32;
 type FnSync = unsafe extern "system" fn() -> i32;
 type FnSetDevice = unsafe extern "system" fn(i32) -> i32;
 
-// ---- cublas ----
+// cublas 符号
 type FnBlasCreate = unsafe extern "system" fn(*mut Ptr) -> i32;
 type FnSgemm = unsafe extern "system" fn(
     Ptr, i32, i32, i32, i32, i32,
@@ -48,7 +49,7 @@ type FnSgemm = unsafe extern "system" fn(
     *const c_void, *const c_void, i32,
 ) -> i32;
 
-// ---- nvrtc ----
+// nvrtc 符号
 type FnNvrtcCreate = unsafe extern "system" fn(*mut Ptr, *const c_char, *const c_char, i32, *const *const c_char, *const *const c_char) -> i32;
 type FnNvrtcCompile = unsafe extern "system" fn(Ptr, i32, *const *const c_char) -> i32;
 type FnNvrtcPtxSize = unsafe extern "system" fn(Ptr, *mut usize) -> i32;
@@ -57,7 +58,7 @@ type FnNvrtcLogSize = unsafe extern "system" fn(Ptr, *mut usize) -> i32;
 type FnNvrtcLog = unsafe extern "system" fn(Ptr, *mut c_char) -> i32;
 type FnNvrtcDestroy = unsafe extern "system" fn(*mut Ptr) -> i32;
 
-// ---- 驱动 API（nvcuda.dll）----
+// 驱动 API 符号（nvcuda.dll）
 type FnCuInit = unsafe extern "system" fn(u32) -> i32;
 type FnCuDeviceGet = unsafe extern "system" fn(*mut i32, i32) -> i32;
 type FnCuGetAttr = unsafe extern "system" fn(*mut i32, i32, i32) -> i32;
@@ -188,7 +189,7 @@ struct Inner {
     half: f32,
 }
 
-/// cuBLAS 直调的 13 头前向。整段前向持锁串行（与 E1 的 ORT 会话锁同口径）。
+/// cuBLAS 直调的 13 头前向。整段前向持锁串行（与 ORT 会话锁同口径）。
 pub struct CublasHeads {
     inner: Mutex<Inner>,
 }
@@ -288,7 +289,7 @@ impl CublasHeads {
         }
 
         // 驱动侧：取主上下文 + 按设备算力编译内核（不硬编码卡型）。
-        // ★cublas 句柄必须在本上下文内创建（句柄与上下文绑定，跨上下文调用即垃圾输出）。
+        // cublas 句柄必须在本上下文内创建（句柄与上下文绑定，跨上下文调用即垃圾输出）。
         let cu_init: FnCuInit = unsafe { std::mem::transmute(sym(drv, "cuInit")?) };
         let cu_device_get: FnCuDeviceGet = unsafe { std::mem::transmute(sym(drv, "cuDeviceGet")?) };
         let cu_get_attr: FnCuGetAttr = unsafe { std::mem::transmute(sym(drv, "cuDeviceGetAttribute")?) };
@@ -833,7 +834,7 @@ impl Inner {
             }
             let lay = out_layout(t, m);
 
-            // ---- 进卡：hidden/pooled 摊平进 pinned，一次 H2D ----
+            // 进卡：hidden/pooled 摊平进 pinned，一次 H2D
             let in_floats = 768 * (t + m);
             let pin_in = self.pin("in", in_floats * 4)?;
             let pin_in_f = pin_in as *mut f32;
@@ -844,11 +845,11 @@ impl Inner {
             self.to_device(pin_in, hidden, t * 768 * 4)?;
             self.to_device((pin_in as *mut u8).add(t * 768 * 4) as Ptr, pooled, m * 768 * 4)?;
 
-            // ---- 输出缓冲：一窗一次回读，布局见 out_layout ----
+            // 输出缓冲：一窗一次回读，布局见 out_layout
             let outs = self.buf("outs", lay.total * 4)?;
             let outs_f = outs as *mut f32;
 
-            // ---- reading：hidden → 768→768 GELU → 768→12907 → argmax ----
+            // reading：Linear(768,768)+GELU+Linear(768,12907)，逐行 argmax
             let r1 = self.buf("r1", t * 768 * 4)?;
             let (rw1, rb1) = (self.w("reading_w1")?, self.w("reading_b1")?);
             self.gemm_nn(hidden, rw1.ptr, r1, t, 768, 768)?;
@@ -859,7 +860,7 @@ impl Inner {
             self.bias_add(rlogits, rb2.ptr, t * 12907, 12907)?;
             self.row_argmax(rlogits, 12907, t, outs_f.add(lay.rargmax) as Ptr)?;
 
-            // ---- 四个小 tagger：pooled → 768→768 GELU → 768→C ----
+            // 四个小 tagger：pooled 经 Linear(768,768)+GELU+Linear(768,C)
             let tag1 = self.buf("tag1", m * 768 * 4)?;
             let mut run_tagger = |g: &mut Self, w1n: &str, b1n: &str, w2n: &str, b2n: &str, c: usize, dst: Ptr| -> Result<(), String> {
                 let (w1, b1) = (g.w(w1n)?, g.w(b1n)?);
@@ -875,7 +876,7 @@ impl Inner {
             run_tagger(self, "conjtype_w1", "conjtype_b1", "conjtype_w2", "conjtype_b2", 33, outs_f.add(lay.conjtype) as Ptr)?;
             run_tagger(self, "conjform_w1", "conjform_b1", "conjform_w2", "conjform_b2", 81, outs_f.add(lay.conjform) as Ptr)?;
 
-            // ---- LoRA 双头（wf 5 类 / bpf 64 类）：base 线性 + delta GEMM → 广播加 GELU → classifier → sigmoid ----
+            // LoRA 双头（wf 5 类 / bpf 64 类）：base 线性加 delta，广播加后过 GELU，再过 classifier 与 sigmoid
             let mut run_lora = |g: &mut Self, w1n: &str, b1n: &str, delta: &str, clf: &str, b2n: &str, l: usize, slot_base: &'static str, slot_g: &'static str, dst: Ptr| -> Result<(), String> {
                 let base = g.buf(slot_base, m * 768 * 4)?;
                 let (w1, b1) = (g.w(w1n)?, g.w(b1n)?);
@@ -893,7 +894,7 @@ impl Inner {
             run_lora(self, "wf_w1", "wf_b1", "wf_delta", "wf_clf", "wf_b2", 5, "wf_base", "wf_g", outs_f.add(lay.wf) as Ptr)?;
             run_lora(self, "bpf_w1", "bpf_b1", "bpf_delta", "bpf_clf", "bpf_b2", 64, "bpf_base", "bpf_g", outs_f.add(lay.bpf) as Ptr)?;
 
-            // ---- ne：pooled → 768→768 GELU → 768→17 ----
+            // ne：pooled 经 Linear(768,768)+GELU+Linear(768,17)
             let ne1 = self.buf("ne1", m * 768 * 4)?;
             let (nw1, nb1) = (self.w("ne_w1")?, self.w("ne_b1")?);
             self.gemm_nn(pooled, nw1.ptr, ne1, m, 768, 768)?;
@@ -902,7 +903,7 @@ impl Inner {
             self.gemm_nn(ne1, nw2.ptr, outs_f.add(lay.ne) as Ptr, m, 768, 17)?;
             self.bias_add(outs_f.add(lay.ne) as Ptr, nb2.ptr, m * 17, 17)?;
 
-            // ---- dep/discourse 投影：单层线性，无激活 ----
+            // dep/discourse 投影：单层线性，无激活
             let mut run_proj = |g: &mut Self, wn: &str, bn: &str, dst: Ptr| -> Result<(), String> {
                 let (w, b) = (g.w(wn)?, g.w(bn)?);
                 g.gemm_nn(pooled, w.ptr, dst, m, 768, 768)?;
@@ -914,7 +915,7 @@ impl Inner {
             run_proj(self, "dis_ws", "dis_bs", outs_f.add(lay.dis_hs) as Ptr)?;
             run_proj(self, "dis_wt", "dis_bt", outs_f.add(lay.dis_ht) as Ptr)?;
 
-            // ---- cohesion：单层线性 + per-rel LoRA（广播相加），输出 (M,9,768) 平坦 ----
+            // cohesion：单层线性 + per-rel LoRA（广播相加），输出 (M,9,768) 平坦
             let mut run_coh = |g: &mut Self, wn: &str, bn: &str, dn: &str, slot_base: &'static str, slot_delta: &'static str, dst: Ptr| -> Result<(), String> {
                 let base = g.buf(slot_base, m * 768 * 4)?;
                 let (w, b) = (g.w(wn)?, g.w(bn)?);
@@ -933,7 +934,7 @@ impl Inner {
                 return Err("cudaDeviceSynchronize 失败".into());
             }
 
-            // ---- 一次 D2H 回读全部输出，CPU 侧装配 ----
+            // 一次 D2H 回读全部输出，CPU 侧装配
             let pin_out = self.pin("out", lay.total * 4)?;
             self.to_host(outs, pin_out, lay.total * 4)?;
             let host = std::slice::from_raw_parts(pin_out as *const f32, lay.total);

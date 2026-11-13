@@ -1,13 +1,14 @@
-//! 12 个头的 ORT 前向（头也上 GPU）。
+//! 12 个头的 ORT 前向（头也上 GPU）。计数口径：dep_type 走单独一张图，不计入
+//! 这 12 个头；cublas_heads 直调含 dep_type 的全部 13 个头。
 //!
-//! 两张 ONNX 由 `导出Rust侧13头ONNX.py` 导出：
+//! 两张 ONNX（assets/models/heads_fused.onnx、assets/models/dep_type.onnx）：
 //! - `heads_fused.onnx`：输入 hidden (1,T,768) 与 pooled (1,M,768)，一次前向出
 //!   reading/pos/subpos/conjtype/conjform 的 logits、word_feature/base_phrase_feature
 //!   的概率（图内已含 sigmoid，与 Rust CPU 路径的 `probabilities` 同口径）、ne 的
 //!   logits，以及 dependency/cohesion/discourse 的 source/target 投影；
 //! - `dep_type.onnx`：输入 (P,1536)（主辞与候选母辞的拼接），输出 (P,4) logits。
 //!
-//! pairwise 头的 seq×seq 中间量（gelu(source+target) 后与 output_weight 的点积）
+//! pairwise 头的 seq*seq 中间量（gelu(source+target) 后与 output_weight 的点积）
 //! 仍留在 Rust 惰性算——那份中间量约 186MB/窗，不适合上 GPU；这里只搬最重的线性层。
 //! 两个 Session 都包在 Mutex 里：解码线程以 `&self` 并发跑多个窗，而 GPU 内核本就
 //! 串行，锁的等待可以忽略。TF32 已在进程级 Environment 的 provider 选项里关闭
@@ -134,10 +135,10 @@ impl GpuHeads {
         Ok(logits.iter().map(|row| argmax(row)).collect())
     }
 
-    /// E3：多窗拼批——一次 ORT run 出 B 个窗的全部头输出。
+    /// 多窗拼批：一次 ORT run 出 B 个窗的全部头输出。
     /// 各窗行数不一时按批内最大值补零行：头的全部算子逐行独立，
-    /// 补零行只产生无人读的垃圾输出，真实行的值不因同批伙伴而变
-    /// （逐字节闸验证）。每窗取回时按自身行数切掉补零区。
+    /// 补零行只产生无人读的垃圾输出，真实行的值不因同批伙伴而变。
+    /// 每窗取回时按自身行数切掉补零区。
     pub fn forward_fused_batched(
         &self,
         windows: &[(&[Vec<f32>], &[Vec<f32>])],
@@ -227,7 +228,7 @@ fn load_session(environment: &Environment, path: &Path) -> Result<Session, Strin
         .map_err(|e| format!("加载模型 {} 失败：{e}", path.display()))
 }
 
-/// 行集 → (1, n, hid) 张量（融合图的输入是 3D，batch 恒为 1）。
+/// 行集转成 (1, n, hid) 张量（融合图的输入是 3D，batch 恒为 1）。
 fn rows_to_array3(rows: &[Vec<f32>]) -> Result<Array3<f32>, String> {
     let n = rows.len();
     let hid = rows.first().map(Vec::len).unwrap_or(0);
@@ -241,7 +242,7 @@ fn rows_to_array3(rows: &[Vec<f32>]) -> Result<Array3<f32>, String> {
     Array3::from_shape_vec((1, n, hid), flat).map_err(|e| format!("行集整形失败：{e}"))
 }
 
-/// reading 的 (T,12907) logits → 每行 argmax（首个最大，与
+/// reading 的 (T,12907) logits 逐行取 argmax（首个最大，与
 /// [`crate::sequence_labeling::argmax`] 同口径）。直接在 ORT 的平坦缓冲上扫，
 /// 不落成行向量——那份中间量每窗约 13MB，解码侧本就只消费 argmax。
 fn extract_reading_argmax(
@@ -264,7 +265,7 @@ fn extract_reading_argmax(
     Ok(data.chunks_exact(c).map(|row| argmax(row)).collect())
 }
 
-/// [n,c] 或 [1,n,c] 的 f32 输出 → 行向量集。
+/// [n,c] 或 [1,n,c] 的 f32 输出展开成行向量集。
 fn extract_rows(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
@@ -285,7 +286,7 @@ fn extract_rows(
     Ok(data.chunks_exact(c).map(<[f32]>::to_vec).collect())
 }
 
-/// 4D f32 输出 → 平坦缓冲（cohesion 的 (1,M,9,768) 用）。
+/// 4D f32 输出摊平成平坦缓冲（cohesion 的 (1,M,9,768) 用）。
 fn extract_flat(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
@@ -314,7 +315,7 @@ fn fetch_output(
     Ok((shape.iter().map(|d| *d as usize).collect(), data.to_vec()))
 }
 
-/// (B, n, c) → 每窗前 counts[k] 行（补零行不取）。
+/// (B, n, c) 取每窗前 counts[k] 行（补零行不取）。
 fn extract_rows_batched(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
@@ -343,7 +344,7 @@ fn extract_rows_batched(
         .collect())
 }
 
-/// (B, T, c) reading → 每窗前 counts[k] 行的 argmax（首个最大）。
+/// (B, T, c) reading 取每窗前 counts[k] 行的 argmax（首个最大）。
 fn extract_reading_argmax_batched(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
@@ -372,7 +373,7 @@ fn extract_reading_argmax_batched(
         .collect())
 }
 
-/// (B, M, 9, 768) cohesion 投影 → 每窗平坦 (M_k*9*768)。
+/// (B, M, 9, 768) cohesion 投影按窗摊平成 (M_k*9*768)。
 fn extract_coh_batched(
     outputs: &ort::session::SessionOutputs<'_>,
     name: &str,
