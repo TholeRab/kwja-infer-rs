@@ -1,11 +1,9 @@
-//! char 三头标签 → 句子 → 词素 → Juman++ 行。
+//! char 三头标签到句子、词素、Juman++ 行的转换。
 //!
-//! 逐函数对照 `kwja/utils/flat_char.py`（其自身对照 `callbacks/utils.py:89-139` 与
-//! `units/sentence.py:470-480`、`morpheme.py:329-371`）。必须照抄的三处细节：
-//! 1. 半角空格强制断词，且空格自己单独成一个词素（`utils.py:110-116`）；
+//! 必须保持的三处细节：
+//! 1. 半角空格强制断词，且空格自己单独成一个词素；
 //! 2. 词素编号逐句重置——本实现按「每句一个独立 Vec」天然满足；
-//! 3. `get_normalized_surf` 的切片按**全文档游标**减去当前词长度取窗
-//!    （`utils.py:111、:121`），不是每句重数。
+//! 3. get_normalized_surf 的切片按全文档游标减去当前词长度取窗，不是每句重数。
 
 use crate::norm_op::get_normalized_surf;
 
@@ -13,7 +11,7 @@ pub const SENT_SEGMENTATION_TAGS: [&str; 2] = ["B", "I"];
 pub const WORD_SEGMENTATION_TAGS: [&str; 2] = ["B", "I"];
 pub const WORD_NORM_OP_TAGS: [&str; 6] = ["K", "D", "V", "S", "P", "E"];
 
-/// numpy.argmax 语义：并列时取第一个最大值的下标。
+/// argmax 语义：并列时取第一个最大值的下标。
 #[must_use]
 pub fn argmax(logits: &[f32]) -> usize {
     let mut best = 0usize;
@@ -27,7 +25,7 @@ pub fn argmax(logits: &[f32]) -> usize {
     best
 }
 
-/// `callbacks/utils.py:72-81`：按非 special 位下标把三路预测挑成标签串。
+/// 按非 special 位下标把三路预测挑成标签串。
 pub fn convert_char_predictions_into_tags(
     sent_segmentation_predictions: &[usize],
     word_segmentation_predictions: &[usize],
@@ -49,8 +47,7 @@ pub fn convert_char_predictions_into_tags(
     (sent, word, norm)
 }
 
-/// char 阶段造出的词素：11 个 Juman++ 字段里除 surf/lemma 外全是常量
-/// （`flat_char.py:22-32` 的 `_UNDEFINED`）。
+/// char 阶段造出的词素：11 个 Juman++ 字段里除 surf/lemma 外全是常量。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Morpheme {
     pub surf: String,
@@ -68,7 +65,7 @@ pub struct Morpheme {
     pub semantics: String,
 }
 
-/// `flat_char.py:55-72`：`lemma = norm or surf`（norm 为空串时回落 surf）。
+/// lemma = norm or surf（norm 为空串时回落 surf）。
 #[must_use]
 pub fn build_morpheme(surf: &str, norm: &str) -> Morpheme {
     Morpheme {
@@ -87,7 +84,7 @@ pub fn build_morpheme(surf: &str, norm: &str) -> Morpheme {
     }
 }
 
-/// `flat_char.py:35-52`：按句界标签把原文切成句子文本。
+/// 按句界标签把原文切成句子文本。
 #[must_use]
 pub fn set_sentences_plain(text: &str, sent_segmentation_tags: &[&str]) -> Vec<String> {
     let mut sentences: Vec<String> = Vec::new();
@@ -104,7 +101,7 @@ pub fn set_sentences_plain(text: &str, sent_segmentation_tags: &[&str]) -> Vec<S
     sentences
 }
 
-/// `flat_char.py:75-109`：按分词标签把每句切成词素；游标跨句连续。
+/// 按分词标签把每句切成词素；游标跨句连续。
 ///
 /// # Panics
 /// `strict=false` 下 `get_normalized_surf` 不应失败；失败视为程序错误。
@@ -119,7 +116,7 @@ pub fn set_morphemes_plain(
         let mut morphemes: Vec<Morpheme> = Vec::new();
         let mut surf = String::new();
         for ch in sentence_text.chars() {
-            // ★半角空格也强制断词（utils.py:110）
+            // 半角空格也强制断词
             if (word_segmentation_tags[cursor] == "B" || ch == ' ') && !surf.is_empty() {
                 let start = cursor - surf.chars().count();
                 let norm = get_normalized_surf(&surf, &word_norm_op_tags[start..cursor], false)
@@ -128,7 +125,7 @@ pub fn set_morphemes_plain(
                 surf.clear();
             }
             if ch == ' ' {
-                // ★空格自己单独成一个词素（utils.py:115-116）
+                // 空格自己单独成一个词素
                 morphemes.push(build_morpheme(" ", " "));
             } else {
                 surf.push(ch);
@@ -146,7 +143,7 @@ pub fn set_morphemes_plain(
     out
 }
 
-/// `morpheme.py:60` 的转义表（char 阶段只涉及制表符与空格）。
+/// 转义表（char 阶段只涉及制表符与空格）。
 fn esc(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -157,7 +154,7 @@ fn esc(s: &str) -> String {
         .collect()
 }
 
-/// 一条词素行（`flat_char.py:121-143`，对照 `morpheme.py:360-371`）。
+/// 一条词素行。
 #[must_use]
 pub fn morpheme_line(m: &Morpheme) -> String {
     let mut parts = vec![
@@ -176,11 +173,11 @@ pub fn morpheme_line(m: &Morpheme) -> String {
     if !m.semantics.is_empty() {
         parts.push(format!("\"{}\"", m.semantics));
     }
-    // features 恒空（char 阶段造的词素没有素性）；将来加字段时按 props/feature.py:50-61 补
+    // features 恒空（char 阶段造的词素没有素性）
     parts.join(" ")
 }
 
-/// 一句的 Juman++ 文本（`flat_char.py:146-151`，对照 `units/sentence.py:470-480`）。
+/// 一句的 Juman++ 文本。
 #[must_use]
 pub fn sentence_jumanpp(comment: &str, morphemes: &[Morpheme]) -> String {
     let mut ret = String::new();

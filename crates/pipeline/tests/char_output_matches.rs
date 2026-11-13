@@ -1,8 +1,7 @@
-//! 阶段 5 闸：char_stage 的 Juman++ 产出与 Python 扁平链**逐字节**一致。
+//! char_stage 的 Juman++ 产出与 Python 参考实现逐字节一致。
 //!
-//! 基线由 `导出工具/导出Rust侧阶段5基准.py` 生成
-//! （本仓 Python 实现＋真 char 模型＋CUDA，doc_id 前缀固定 "c"）。
-//! 闸口径（实施方案 §四 阶段 5）：先单章一致，再整书一致。
+//! 基线 fixtures 在 tests/fixtures/（真 char 模型加 CUDA 生成，doc_id 前缀固定 c）。
+//! 测试分层：先单章一致，再整书一致。
 
 use std::path::PathBuf;
 
@@ -11,7 +10,6 @@ use kwja_normalize::nfkc::normalize_text;
 use kwja_pipeline::char_stage::CharStage;
 
 /// 仓内素材路径：从 crate 清单目录上溯找到仓根，再拼相对路径。
-/// ★ 起素材一律在本仓 assets/ 下，不再引用 参考实现仓。
 fn repo_path(rel: &str) -> PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
@@ -52,9 +50,9 @@ fn char_stage() -> CharStage {
     CharStage::new(vocab_txt(), 512).expect("CharStage 构建失败")
 }
 
-/// 测试设备由 KWJA_DEVICE 决定：cuda（默认，断言 CUDA 真生效）／cpu
-///（**纯 CPU**，断言 provider 里没有 CUDA）／auto（打印实际 provider）。
-/// ★CPU 形态的最终检验＝10 章闸；整书只跑 GPU——CPU 跑整书太慢。
+/// 测试设备由 KWJA_DEVICE 决定：cuda（默认，断言 CUDA 真生效）、
+/// cpu（纯 CPU，断言 provider 里没有 CUDA）、auto（打印实际 provider）。
+/// 整书只跑 GPU——CPU 跑整书太慢。
 fn backend() -> OrtBackend {
     let dir = onnx_dir();
     let dev = std::env::var("KWJA_DEVICE").unwrap_or_default();
@@ -73,8 +71,8 @@ fn backend() -> OrtBackend {
         device,
     )
     .expect("ORT 后端创建失败");
-    // ★断言设备真到位：EP 起不来时 ORT 会静默回落 CPU，
-    // 产出虽应逐字节相同，但那就不是目标配置了（事实账 §六）。
+    // 断言设备真到位：EP 起不来时 ORT 会静默回落 CPU，
+    // 产出虽应逐字节相同，但那就不是目标配置了。
     let providers = backend.active_providers();
     if want_cuda {
         assert!(
@@ -146,12 +144,12 @@ fn chapter1_matches_python_byte_for_byte() {
     assert_bytes_equal(&output, &expected, "单章 char 产出");
 }
 
-/// 分级闸：前 N 章。N 小时秒级返回，用来在改动的第一时间发现回归，
+/// 分层运行前 N 章。N 小时秒级返回，用来在改动的第一时间发现回归，
 /// 不必每次等到整书。
 ///
-/// ★基线必须按同一文档数单独生成（`导出Rust侧阶段5基准.py --chapters N`）：
-///   doc_id 的零填充宽度是 len(str(文档数))，1 章时 "c-0-1"、长书时 "c-00-1"，
-///   从整书基线切前缀根本对不上（实测首个差异在第 10 字节，就是那一位 0）。
+/// 基线必须按同一文档数单独生成：
+///   doc_id 的零填充宽度是 len(str(文档数))，1 章时 c-0-1、多章时 c-00-1，
+///   从整书基线切前缀对不上。
 fn run_tier(n_chapters: usize, fixture: &str) {
     let started = std::time::Instant::now();
     let texts = corpus_texts();
@@ -174,7 +172,7 @@ fn six_chapters_match_python_byte_for_byte() {
     run_tier(6, "char_stage_6ch.txt");
 }
 
-/// CPU 形态的最终检验：前 10 章（KWJA_DEVICE=cpu 跑这个，不跑整书）。
+/// 纯 CPU 形态跑前 10 章（KWJA_DEVICE=cpu 跑这个，不跑整书）。
 /// 10 章的 doc_id 零填充宽度与整书相同（都是 2 位），基线可从整书切出。
 #[test]
 fn ten_chapters_match_python_byte_for_byte() {

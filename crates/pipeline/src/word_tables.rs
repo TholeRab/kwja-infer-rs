@@ -1,5 +1,4 @@
-//! word 阶段常量表（`assets/models/word_tables.json`，导出脚本从
-//! checkpoint hparams ＋ `kwja.utils.constants` 生成）。
+//! word 阶段常量表（assets/models/word_tables.json，生成文件）。
 //!
 //! 标签表（pos/subpos/conjtype/conjform/NE/談話関係/依存类型）与
 //! `heads::mask_tables` 里的静态表同源；这里再加载一份是因为
@@ -38,7 +37,7 @@ pub struct WordTables {
     pub exophora_referents: Vec<String>,
     pub restrict_cohesion_target: bool,
     pub special_tokens: Vec<String>,
-    /// 同形词消歧规格（checkpoint callbacks.prediction_writer.ambig_surf_specs）：
+    /// 同形词消歧规格：
     /// 命中的 (conjtype, conjform) 组合要走词典查 lemma，而不是 jinf 规则变形。
     pub ambig_surf_specs: Vec<AmbigSurfSpec>,
 }
@@ -55,12 +54,12 @@ impl WordTables {
         serde_json::from_str(&text).map_err(|e| format!("{path:?} 解析失败：{e}"))
     }
 
-    /// 数据集里的 special_tokens：滤掉 `" "`（`word_inference.py:79`）。
+    /// 数据集里的 special_tokens：滤掉 " "。
     pub fn dataset_special_tokens(&self) -> Vec<&str> {
         self.special_tokens.iter().filter(|s| s.as_str() != " ").map(|s| s.as_str()).collect()
     }
 
-    /// cohesion 任务 → 判据类名（`word_inference.py:33-37` 的 `_TASK2NAME`）。
+    /// cohesion 任务对应的判据类名。
     pub fn cohesion_task2name(&self, task: &str) -> &'static str {
         match task {
             "pas_analysis" => "PasExtractor",
@@ -70,7 +69,7 @@ impl WordTables {
         }
     }
 
-    /// cohesion 任务 → 关系名列表（`word_inference.py:71-75`）。
+    /// cohesion 任务对应的关系名列表。
     pub fn cohesion_task2rels(&self, task: &str) -> Vec<String> {
         match task {
             "pas_analysis" => self.pas_cases.clone(),
@@ -80,7 +79,7 @@ impl WordTables {
         }
     }
 
-    /// 模型输出第 rel 通道对应的关系名（任务顺序拼接，`writer:451`）。
+    /// 模型输出第 rel 通道对应的关系名（按任务顺序拼接）。
     pub fn cohesion_rels(&self) -> Vec<String> {
         let mut rels = Vec::new();
         for task in &self.cohesion_tasks {

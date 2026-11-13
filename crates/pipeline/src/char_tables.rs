@@ -1,5 +1,4 @@
-// 由 导出工具/导出Rust侧阶段3基准.py 从 kwja.utils.constants 生成——勿手改。
-// 出处：代码/src/kwja/utils/constants.py（CHOON_SET 等 6 张；17 方案 §四 阶段 3）。
+// 生成文件，勿手改；与参考实现的 constants 常量保持一致。
 #![allow(dead_code)]
 
 pub const CHOON_SET: [char; 8] = ['-', '~', '⁓', '∼', '〜', 'ー', '～', 'ｰ'];

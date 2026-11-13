@@ -1,15 +1,13 @@
-//! 扁平词素组装（`callbacks/flat_morphemes.py` ＋ writer 的
-//! `_get_lemma`／`_lookup_semantics` 的 Rust 移植）。
+//! 扁平词素组装：为每个词素产出与 KNP 词素行一一对应的字段。
 //!
-//! 每个词素产出与 KNP 词素行一一对应的字段；features 是「插入序 ＋ 同名键
-//! 后写覆盖」的小字典（上游 rhoknp FeatureDict 的语义），用
-//! `OrderedFeats` 表达。同形词（homograph）按 ops 笛卡尔积展开成 ALT 标签。
+//! features 是「插入序 + 同名键后写覆盖」的小字典（参考实现的 FeatureDict 语义），
+//! 用 `OrderedFeats` 表达。同形词（homograph）按 ops 笛卡尔积展开成 ALT 标签。
 
 use crate::jumandic::JumanDic;
 use crate::jinf::Jinf;
 use crate::word_tables::{AmbigSurfSpec, WordTables};
 
-/// 素性值：`True` 或 `':'` 后的字符串（上游 FeatureDict 的两种形态）。
+/// 素性值：布尔真或冒号后的字符串。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FeatureValue {
     True,
@@ -79,7 +77,7 @@ pub struct FlatMorpheme {
     pub homographs: Vec<String>,
 }
 
-/// `_get_lemma`（writer:500-532）：conjtype 为 `*` 时 lemma=norm；
+/// 求 lemma：conjtype 为 `*` 时 lemma=norm；
 /// 命中 ambig_surf_specs 时走词典（多 lemma 时把余下的记进 homograph_ops）；
 /// 否则 jinf 规则变形回「基本形」，失败时回退 norm 并由调用方记 warning。
 #[allow(clippy::too_many_arguments)]
@@ -104,7 +102,7 @@ fn get_lemma(
         if spec.conjtype != conjtype || spec.conjform != conjform {
             continue;
         }
-        // ambiguous: dictionary lookup to identify the lemma
+        // 命中同形 spec：查词典定 lemma
         let entries = jumandic.lookup_by_norm(norm);
         let matched: Vec<&crate::jumandic::JumanEntry> = entries
             .iter()
@@ -134,7 +132,7 @@ fn get_lemma(
     if let Some(lemma) = ambiguous_lemma {
         return lemma;
     }
-    // not ambiguous: use paradigm table to generate the lemma
+    // 非同形：用活用表变形出 lemma
     match jinf.convert(norm, conjtype, conjform, "基本形") {
         Ok(lemma) => lemma,
         Err(e) => {
@@ -145,7 +143,7 @@ fn get_lemma(
     }
 }
 
-/// `_lookup_semantics`（writer:534-595）：查词典语义串，带引号原样返回。
+/// 查词典语义串，带引号原样返回。
 #[allow(clippy::too_many_arguments)]
 fn lookup_semantics(
     jumandic: &JumanDic,
@@ -205,7 +203,7 @@ pub enum HomographKind {
     Semantics,
 }
 
-/// `_expand_homographs`（flat_morphemes.py:19-49）：ops 笛卡尔积 → ALT 标签。
+/// 同形词 ops 笛卡尔积展开成 ALT 标签。
 #[allow(clippy::too_many_arguments)]
 fn expand_homographs(
     surf: &str,
@@ -248,8 +246,8 @@ fn expand_homographs(
     out
 }
 
-/// `build_morphemes_plain`：输入各词素的 surf／norm(=char 阶段 lemma 字段)／
-/// 模型读音／四路属性下标，产出 KNP 词素字段。
+/// 输入各词素的 surf、norm（即 char 阶段 lemma 字段）、模型读音、四路属性下标，
+/// 产出 KNP 词素字段。
 pub struct MorphemeBuildInput<'a> {
     pub surfs: &'a [String],
     pub norms: &'a [String],

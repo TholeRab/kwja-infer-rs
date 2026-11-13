@@ -1,4 +1,4 @@
-//! jumanpp 解析单测（自 src/jumanpp.rs 迁出；硬规矩：src 只放实现）。
+//! jumanpp 解析单测。
 use kwja_pipeline::jumanpp::{parse_sentence, sid_of_comment, split_sentences, surf_of_line};
 
 #[test]

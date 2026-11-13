@@ -1,7 +1,5 @@
-//! 阶段 3 闸（NORM_OP 状态机）：`get_normalized_surf` 在 `strict=false`（char 阶段口径，
-//! `flat_char.py:93`）下逐用例与 Python 全等；`strict=true` 的合法/报错路径按 Python
-//! 源码（word_normalization.py:87-150）抽查。fixtures 由
-//! 导出工具/导出Rust侧阶段3基准.py 用本仓 Python 实现现场算出。
+//! get_normalized_surf 行为测试：strict=false（char 阶段口径）下逐用例与
+//! Python 参考实现全等；strict=true 的合法/报错路径抽查。
 
 use kwja_pipeline::norm_op::get_normalized_surf;
 
@@ -32,7 +30,7 @@ fn norm_op_loose_branch_matches_python() {
 
 #[test]
 fn strict_branch_matches_python() {
-    // 合法组合：strict 与 loose 同结果（表值见 constants.py:123-185）
+    // 合法组合：strict 与 loose 同结果
     assert_eq!(get_normalized_surf("かー", &["K", "P"], true).unwrap(), "かあ");
     assert_eq!(get_normalized_surf("けー", &["K", "E"], true).unwrap(), "けえ");
     assert_eq!(get_normalized_surf("が", &["V"], true).unwrap(), "か");

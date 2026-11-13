@@ -1,20 +1,19 @@
-//! word 阶段入口（阶段 6 落地：解析＋分窗；Python 侧
-//! `datamodule/datasets/flat_word_document.py` 的对应物）。
+//! word 阶段入口：解析 char 阶段产出的 Juman++ 文本并按 stride=2 分窗。
 //!
 //! 输入是 char 阶段的产出（Juman++ 文本），先解析成扁平文档，
-//! 再按 token 数切成 stride=2 的滑窗。★sid 直接取自注释行（不重编）——
-//! 编错了整章都挂错对象。分窗必须复用上游 `SequenceSplitter`（见 window.rs
+//! 再按 token 数切成 stride=2 的滑窗。sid 直接取自注释行（不重编）——
+//! 编错了整章都挂错对象。分窗必须复用 SequenceSplitter（见 window.rs
 //! 模块注释：窗间大量重叠，不是「装不下才开新窗」的贪心）。
 //!
-//! 目标句＝每窗末尾 stride 句：被滑窗带进来的前缀句只做上下文，
-//! 不写回结果（阶段 7 的 writer 里按目标句过滤）。
+//! 目标句=每窗末尾 stride 句：被滑窗带进来的前缀句只做上下文，
+//! 不写回结果（输出组装时按目标句过滤）。
 
 use crate::jumanpp;
 use crate::window::{SequenceSplitter, target_sentence_flags};
 use kwja_tokenizer::word_side::WordTokenizer;
 
-/// 一句：sid ＋ 词素 surf 列表（surf 供按词预切分计 token）＋ lemma 列表
-/// （char 阶段的正規化形，阶段 7 里作 norm 查词典/jinf）。
+/// 一句：sid、词素 surf 列表（surf 供按词预切分计 token）与 lemma 列表
+/// （char 阶段的正規化形，用于查词典/jinf）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WordSentence {
     pub sid: String,
@@ -22,14 +21,14 @@ pub struct WordSentence {
     pub lemmas: Vec<String>,
 }
 
-/// 扁平文档：doc_id ＋ 句子序列。
+/// 扁平文档：doc_id 与句子序列。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WordDocument {
     pub doc_id: String,
     pub sentences: Vec<WordSentence>,
 }
 
-/// 一个分窗：子文档 id ＋ 切进的句子 ＋ 在原文档里的句子起点下标。
+/// 一个分窗：子文档 id、切进的句子与在原文档里的句子起点下标。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WordWindow {
     pub doc_id: String,
@@ -60,8 +59,7 @@ impl WordWindow {
     }
 }
 
-/// 一段 Juman++ 文本 → 扁平文档（`flat_word_document.parse_jumanpp_document`；
-/// sid 取自注释行）。
+/// 把一段 Juman++ 文本解析成扁平文档；sid 取自注释行。
 pub fn parse_jumanpp_document(text: &str, doc_id: &str) -> WordDocument {
     let mut sentences: Vec<WordSentence> = Vec::new();
     for sent_text in jumanpp::split_sentences(text) {
@@ -78,23 +76,18 @@ pub fn parse_jumanpp_document(text: &str, doc_id: &str) -> WordDocument {
     }
 }
 
-/// rhoknp `Sentence.SID_PAT`（units/sentence.py:29）的 did 组：
-/// sid 去掉末尾的 `-<句号>`（"c-00-1" → "c-00"）。Python 侧
-/// `_SID_DID_PAT = ^(?P<sid>(?P<did>[a-zA-Z\d\-_]*?)-?\d*)$` 的等价算法：
-/// 先剥掉末尾的 ASCII 数字串，再剥掉一个 '-'。
+/// 从 sid 取 doc_id：去掉末尾的 -句号（c-00-1 得 c-00）。等价于正则取 did 组：
+/// 先剥掉末尾的 ASCII 数字串，再剥掉一个连字符。
 fn sid_did(sid: &str) -> &str {
     let t = sid.trim_end_matches(|c: char| c.is_ascii_digit());
     t.strip_suffix('-').unwrap_or(t)
 }
 
-/// Juman++ 文本 → 按 S-ID 文档前缀切分的多个扁平文档。
+/// Juman++ 文本按 S-ID 文档前缀切分成多个扁平文档。
 ///
-/// ★对照 Python `parse_jumanpp_documents_by_doc`（flat_word_document.py:47-86），
-///   即上游 word_inference.py:41-44 的 rhoknp `chunk_by_document` 同口径：
-///   **连续同 doc_id 的句归成一个文档**，doc_id 变化（或缺失）即开新文档。
-///    定案：word 阶段必须**按章切文档后再逐文档滑窗**——把整书并成
-///   1 个文档滑窗，窗口序列 4357→4691，每个目标句的预测上下文全变，
-///   953 处词元差异全部由此而来。
+/// 连续同 doc_id 的句归成一个文档，doc_id 变化（或缺失）即开新文档。
+/// word 阶段必须按章切文档后再逐文档滑窗；若把整份输入并成一个文档滑窗，
+/// 每个目标句的预测上下文都会改变。
 pub fn parse_jumanpp_documents_by_doc(text: &str) -> Vec<WordDocument> {
     let mut documents: Vec<WordDocument> = Vec::new();
     let mut cur: Option<WordDocument> = None;
@@ -132,12 +125,11 @@ pub fn parse_jumanpp_documents_by_doc(text: &str) -> Vec<WordDocument> {
     }
     documents
 }
-/// 按 token 数把文档切成子文档（`flat_word_document.split_flat_word_document`，
-/// 对照上游 datasets/base.py:90-108 ＋ word_inference.py 的 max_token_length）。
+/// 按 token 数把文档切成子文档。
 ///
-/// 句长按**逐词素**预切分计 token（`_token_len`：add_special_tokens=False、
-/// is_split_into_words=True）——词素边界与字符边界不同，整句切会算错。
-/// 总长不超上限时整文档就是一窗（doc_id 不加后缀，目标句判定走「全 True」分支）。
+/// 句长按逐词素预切分计 token（add_special_tokens=False、is_split_into_words=True）
+/// ——词素边界与字符边界不同，整句切会算错。
+/// 总长不超上限时整文档就是一窗（doc_id 不加后缀，目标句判定走全 True 分支）。
 pub fn split_flat_word_document(
     document: &WordDocument,
     max_token_length: usize,
@@ -160,7 +152,7 @@ pub fn split_flat_word_document(
     let mut subs: Vec<WordWindow> = Vec::new();
     for (sub_idx, span) in splitter.split_into_spans().into_iter().enumerate() {
         let sentences = document.sentences[span.start..span.end].to_vec();
-        // to_sub_doc_id（sub_document.py:10-11）：`{doc_id}-s{stride}i{sub_idx}`
+        // 子文档 id：{doc_id}-s{stride}i{sub_idx}
         let doc_id = format!("{}-s{}i{sub_idx}", document.doc_id, span.stride);
         subs.push(WordWindow {
             doc_id,

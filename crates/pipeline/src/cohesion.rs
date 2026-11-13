@@ -1,18 +1,18 @@
-//! cohesion 解码（`flat_cohesion.py` ＋ `flat_cohesion_mask.py` 的移植）。
+//! cohesion 解码。
 //!
-//! 判据全部照抄 cohesion_tools 三个 extractor 的 is_target／is_candidate：
-//! - 候选：Pas/Bridging = `cand < anaph` 或（`cand > anaph` 且同句）；
-//!   Coreference = 只有 `cand < anaph`。
-//! - 目标：Pas = 用言 ∨ 非用言格解析；Coreference = 体言；
-//!   Bridging = 体言 ∧ ¬非用言格解析。
+//! 判据照抄参考实现的三个 extractor 的 is_target / is_candidate：
+//! - 候选：Pas/Bridging 为 cand < anaph，或 cand > anaph 且同句；
+//!   Coreference 只有 cand < anaph。
+//! - 目标：Pas 为用言或非用言格解析；Coreference 为体言；
+//!   Bridging 为体言且非非用言格解析。
 //!
-//! logits 的行/列都是**窗内词素下标**：row = anaph、col = cand；
+//! logits 的行/列都是窗内词素下标：row = anaph、col = cand；
 //! special 列（6 个，[ROOT] 除外）无条件对全部词素行放开。
 
 use rayon::prelude::*;
 use crate::morpheme_build::OrderedFeats;
 
-/// `flat_cohesion._is_target`。
+/// 判断基本句是否为该 cohesion 任务的标注目标。
 pub fn is_target(name: &str, feats: &OrderedFeats) -> bool {
     match name {
         "PasExtractor" => feats.contains("用言") || feats.contains("非用言格解析"),
@@ -35,7 +35,7 @@ pub struct RelRow {
     pub bp_index: Option<usize>,
 }
 
-/// cohesion 解码的输入视图（对应 Python 的 `_P` / plain 文档）。
+/// cohesion 解码的输入视图。
 pub struct CohesionDoc<'a> {
     /// 每个基本句的 head（窗内词素下标）。
     pub bp_head_gi: &'a [usize],
@@ -45,19 +45,18 @@ pub struct CohesionDoc<'a> {
     pub bp_feats: &'a [OrderedFeats],
 }
 
-/// cohesion 行取数闭包：`(anaph 行, gather 列) → (列数 × 通道数) 的原始 logits`。
-/// ★必须是 `+ Sync`：cohesion 的 101 个行彼此独立，
-///   串行算只用 1 个核，而它独占整窗 57% 的时间。
+/// cohesion 行取数闭包：给定 anaph 行与 gather 列，返回（列数, 通道数）的原始 logits。
+/// 必须是 + Sync：各行彼此独立，串行算只用 1 个核，会成为整窗主要耗时。
 pub type CohesionRowFn<'a> = &'a (dyn Fn(usize, &[usize]) -> Vec<Vec<f32>> + Sync);
 
-/// `add_cohesion_plain`。
+/// cohesion 解码主流程。
 ///
 /// `row_logits`：取第 `anaph` 行、`cols` 列的原始 logits（未掩码），
 /// 形状 `(cols.len(), num_rels)`——由 heads 投影的 `row_gathered` 给出。
 #[allow(clippy::too_many_arguments)]
 pub fn add_cohesion(
     doc: &CohesionDoc<'_>,
-    // 只对 true 的基本句行打分（落账侧只留目标句的行，其余行本是白算）。
+    // 只对 true 的基本句行打分（输出侧只留目标句的行，其余行本是白算）。
     wanted: &[bool],
     row_logits: CohesionRowFn<'_>,
     cohesion_tasks: &[String],
@@ -71,7 +70,7 @@ pub fn add_cohesion(
     num_rels: usize,
 ) -> Vec<(usize, RelRow)> {
     let b = doc.bp_head_gi.len();
-    // gather 列 = 全部基本句 head ＋ special 词素下标
+    // gather 列 = 全部基本句 head + special 词素下标
     let mut gather: Vec<usize> = doc.bp_head_gi.to_vec();
     gather.extend_from_slice(special_indices);
 
@@ -101,17 +100,15 @@ pub fn add_cohesion(
     }
     let _ = num_rels;
 
-    // ★阶段一：并行算全部行，每行只算「各任务掩码的并集」列。
+    // 第一遍：并行算全部行，每行只算各任务掩码的并集列。
     //   行与行之间只读共享（source/target 投影结果），没有数据依赖，
-    //   是这里唯一足够大的并行粒度（每行 106 列 × 9 rel × 768 维）。
-    //
-    //   ★剪枝（剪枝方向）：被所有任务掩掉的列永远赢不了 argmax
-    //   （MASKED=-1024 低于任何有限 logits，而 6 个 special 列对全部行放开
-    //   ⇒ 每行至少 6 列可算），跳过它们与「算完再掩成 MASKED」逐字节等价。
-    //   并集取最宽的非共指掩码：前指（cand < anaph）∪ 同句后指（cand > anaph
-    //   且同句）∪ special 列；共指任务更严的那部分列照常在阶段二掩掉。
-    //
-    //   ★顺序不变：par_iter().map().collect() 保序，列仍按 gather 序排列。
+    //   是这里唯一足够大的并行粒度。
+    //   剪枝：被所有任务掩掉的列永远赢不了 argmax
+    //   （MASKED=-1024 低于任何有限 logits，而 6 个 special 列对全部行放开，
+    //   每行至少 6 列可算），跳过它们与算完再掩成 MASKED 逐字节等价。
+    //   并集取最宽的非共指掩码：前指（cand < anaph）、同句后指（cand > anaph
+    //   且同句）、special 列；共指任务更严的那部分列照常在第二遍掩掉。
+    //   顺序不变：par_iter().map().collect() 保序，列仍按 gather 序排列。
     let all_rows: Vec<(usize, (Vec<usize>, Vec<Vec<f32>>))> = (0..b)
         .into_par_iter()
         .filter(|&bi| wanted[bi])
@@ -134,7 +131,7 @@ pub fn add_cohesion(
         })
         .collect();
 
-    // ★阶段二：串行解码（掩码 + argmax）。
+    // 第二遍：串行解码（掩码 + argmax）。
     //   argmax 平局取首个，顺序是语义的一部分，这里必须串行。
     let mut out = Vec::new();
     for (bi, (ks, rows)) in all_rows.into_iter() {
@@ -154,7 +151,7 @@ pub fn add_cohesion(
             for (idx, logits) in rows.iter().enumerate() {
                 let k = ks[idx];
                 let allowed = if k >= b {
-                    // special 列：掩码只放开 only_cohesion 的 6 个（[ROOT] 被压住）
+                    // special 列：掩码只放开其中 6 个 cohesion special（[ROOT] 被压住）
                     special_indices.iter().any(|s| s == &gather[k])
                 } else {
                     let cand_gi = gather[k];

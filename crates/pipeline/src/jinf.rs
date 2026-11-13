@@ -1,9 +1,7 @@
-//! Jinf 活用形变换（venv `jinf` 库 1.0.4 的移植；数据 `assets/dicts/jinf.json`
-//! 与 `assets/dicts/e_basic_stem_suffix.json` 由导出脚本拷出）。
+//! Jinf 活用形变换。数据在 assets/dicts/jinf.json 与 assets/dicts/e_basic_stem_suffix.json。
 //!
-//! writer 用法只有一种：`jinf(norm, conjtype, conjform, "基本形")`——
-//! 把模型给出的活用形还原成基本形（词素行的 lemma 字段）。
-//! 语义照抄 `jinf/jinf.py:18-57`：源形后缀剥掉得词干，目标形后缀接回去；
+//! 用法只有一种：把模型给出的活用形还原成基本形（词素行的 lemma 字段）。
+//! 语义照抄参考实现：源形后缀剥掉得词干，目标形后缀接回去；
 //! 后缀为 `*` 表示不变形（词干原样）；「エ基本形」按词干末音查特殊表。
 
 use std::collections::HashMap;
@@ -28,9 +26,9 @@ impl Jinf {
         Ok(Self { dict, e_basic_stem_suffix_dict })
     }
 
-    /// `Jinf.__call__(text, inf_type, source_inf_form, target_inf_form)`。
+    /// 把 text 从 source_inf_form 变换到 target_inf_form。
     ///
-    /// Python 版在源形不匹配时 `raise ValueError`，writer 捕获后回退成 `norm`；
+    /// Python 版在源形不匹配时抛 ValueError，调用方捕获后回退成 norm；
     /// Rust 版用 `Err(String)` 表达同一件事。
     pub fn convert(
         &self,

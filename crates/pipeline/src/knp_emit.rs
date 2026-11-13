@@ -1,8 +1,8 @@
-//! KNP 文本输出（`flat_emit.py` 的移植）。
+//! KNP 文本输出。
 //!
 //! 行构成只有三种：词素行、`* nD` 文节行、`+ nD <素性>` 基本句行。
-//! 转义只对 surf/reading/lemma 三个字段：TAB → `\t`、空格 → `\␣`
-//! （实测基准 fixture：单反斜杠 ＋ U+2423）。
+//! 转义只对 surf/reading/lemma 三个字段：TAB 写作 \t，空格写作 \␣
+//! （单反斜杠加 U+2423）。
 
 use crate::morpheme_build::{FeatureValue, FlatMorpheme, OrderedFeats};
 
@@ -18,7 +18,7 @@ fn esc(s: &str) -> String {
     out
 }
 
-/// `morpheme_line`（flat_emit.py:23-53）。
+/// 拼一条词素行。
 pub fn morpheme_line(m: &FlatMorpheme) -> String {
     let mut parts: Vec<String> = vec![
         esc(&m.surf),
@@ -36,7 +36,7 @@ pub fn morpheme_line(m: &FlatMorpheme) -> String {
     if !m.semantics.is_empty() {
         parts.push(m.semantics.clone());
     }
-    // ★features 按插入序拼（上游 FeatureDict.to_fstring 不排序）；
+    // features 按插入序拼（参考实现不排序）；
     //   值里的 '>' 转成 '\>'。
     let mut feats = String::new();
     for (k, v) in m.features.iter() {
@@ -55,8 +55,7 @@ pub fn morpheme_line(m: &FlatMorpheme) -> String {
     parts.join(" ")
 }
 
-/// `feature_string`（flat_emit.py:89-101）：一个基本句的全部素性，
-/// 按**插入序**拼（不排序——排序实测会错）。
+/// 一个基本句的全部素性串：按插入序拼，不排序（排序会与参考输出不一致）。
 pub fn feature_string(feats: &OrderedFeats) -> String {
     let mut items: Vec<String> = Vec::new();
     for (k, v) in feats.iter() {
@@ -68,7 +67,7 @@ pub fn feature_string(feats: &OrderedFeats) -> String {
     items.iter().map(|f| format!("<{f}>")).collect()
 }
 
-/// `bp_header`（flat_emit.py:104-128）。
+/// 拼基本句行（+ nD 行头与 rel/features 排布）。
 ///
 /// `rels`：[(rel, target, sid, bp_index)]；sid 为 None 表示指外（无 id）。
 pub fn bp_header(parent: i32, feats: &str, rels: &[(String, String, Option<String>, Option<usize>)], dep_type: Option<&str>) -> String {
@@ -84,7 +83,7 @@ pub fn bp_header(parent: i32, feats: &str, rels: &[(String, String, Option<Strin
     }
     let dt = dep_type.unwrap_or("D");
     let mut s = format!("+ {}{dt}", if parent >= 0 { parent.to_string() } else { "-1".to_string() });
-    // ★rel 与 features 之间不能加空格；没有 rel 时 features 前要空格。
+    // rel 与 features 之间不能加空格；没有 rel 时 features 前要空格。
     if !buf.is_empty() {
         s.push(' ');
         s.push_str(&buf.join(""));

@@ -1,5 +1,4 @@
-//! 切分与三小步（`flat_chunk.py` ＋ `flat_small_steps.py` 的移植）：
-//! 词素 → 文节/基本句（概率阈值），基本句素性，NE，句末边界。
+//! 切分与三小步：词素到文节/基本句（概率阈值）、基本句素性、NE、句末边界。
 
 use crate::morpheme_build::{FeatureValue, FlatMorpheme, OrderedFeats};
 
@@ -11,7 +10,7 @@ pub struct Phrase {
 
 #[derive(Debug, Clone)]
 pub struct BasePhrase {
-    /// 词素下标（_emit_window 之后是**窗内全局**下标）。
+    /// 词素下标（窗内全局下标）。
     pub ms: Vec<usize>,
     /// 主辞词素下标（同上）。
     pub head_gi: usize,
@@ -58,9 +57,9 @@ impl WordFeatureIdx {
     }
 }
 
-/// `chunk_plain`（flat_chunk.py:20-63）：按 word_feature 概率切文节/基本句。
+/// 按 word_feature 概率切文节/基本句。
 ///
-/// `word_feature_probs[i]` 是第 i 个词素（**句内扁平序**）的 5 维概率。
+/// word_feature_probs[i] 是第 i 个词素（句内扁平序）的 5 维概率。
 pub fn chunk_plain(
     flat_ms: &mut [FlatMorpheme],
     sentence_ranges: &[(usize, usize)],
@@ -81,7 +80,7 @@ pub fn chunk_plain(
         for i in start..stop {
             let p = &word_feature_probs[i];
             let f = &mut flat_ms[i].features;
-            // ★按上游顺序写进 dict（utils.py:233-238 的顺序），输出按插入序拼。
+            // 按参考实现的顺序写进 features，输出按插入序拼。
             if p[idx.head] >= 0.5 {
                 f.set_true("基本句-主辞");
             }
@@ -115,7 +114,7 @@ pub fn chunk_plain(
         for ph in &mut phrases {
             for bp in &mut ph.bps {
                 bp.head_gi = head_of(flat_ms, &bp.ms);
-                // ★head_text：基本句主辞的表层文本（cohesion 的 RelTag.target）。
+                // head_text：基本句主辞的表层文本（cohesion 的 rel target 用）。
                 bp.head_text = flat_ms[bp.head_gi].surf.clone();
             }
         }
@@ -124,8 +123,7 @@ pub fn chunk_plain(
     out
 }
 
-/// `_head_of`（flat_chunk.py:74-85）：主辞优先级
-/// 内容語(0) < 準内容語(1) < 基本句-主辞(2)，同优先级取先出现者；都无则 ms[0]。
+/// 主辞优先级：内容語(0)、準内容語(1)、基本句-主辞(2)，同优先级取先出现者；都无则 ms[0]。
 pub fn head_of(flat_ms: &[FlatMorpheme], ms: &[usize]) -> usize {
     const PRIORITY: [(&str, i32); 3] = [("内容語", 0), ("準内容語", 1), ("基本句-主辞", 2)];
     let mut head = ms[0];
@@ -150,9 +148,9 @@ pub fn chu_index(base_phrase_features: &[String]) -> usize {
     base_phrase_features.iter().position(|s| s == "節-主辞").expect("BASE_PHRASE_FEATURES 缺 節-主辞")
 }
 
-/// `add_bp_features_plain`（flat_small_steps.py:15-51）：基本句素性 ＋ 節-区切/節-主辞。
+/// 基本句素性 + 節-区切/節-主辞 标注。
 ///
-/// `bp_features_prob[gi]` 以基本句 head 的**窗内全局**词素下标取行。
+/// bp_features_prob[gi] 以基本句 head 的窗内全局词素下标取行。
 /// `bp_head_gi`：该句每个基本句的 head 全局下标（顺序与 chunks 展开序一致）。
 pub fn add_bp_features(
     chunks: &mut Chunk,
@@ -202,7 +200,7 @@ pub fn add_bp_features(
     }
 }
 
-/// `'用言:判'` → `('用言', Text('判'))`；`'体言'` → `('体言', True)`。
+/// '用言:判' 拆成 ('用言', Text('判'))；'体言' 拆成 ('体言', True)。
 fn split_feat(feat: &str) -> (String, FeatureValue) {
     match feat.split_once(':') {
         Some((k, v)) => (k.to_string(), FeatureValue::Text(v.to_string())),
@@ -210,7 +208,7 @@ fn split_feat(feat: &str) -> (String, FeatureValue) {
     }
 }
 
-/// `add_ne_plain`（flat_small_steps.py:54-86）：逐句扫 NE 标签。
+/// 逐句扫 NE 标签。
 ///
 /// 返回 (基本句下标, 素性键='NE', 值='类别:文本')；`bp_of_ms` 把窗内词素全局
 /// 下标映到基本句序号。

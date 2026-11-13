@@ -1,7 +1,7 @@
-//! `get_normalized_surf` 的逐分支复刻（`kwja/utils/word_normalization.py:87-150`）。
+//! get_normalized_surf 的逐分支复刻，行为与 Python 参考实现一致。
 //!
-//! char 阶段的调用口径是 `strict=false`（`flat_char.py:93`）：模型预测出「非法组合」时
-//! 不报错，按宽松分支原样保留。`P`/`E` 依赖**已累积 norm 的最后一个字**，
+//! char 阶段的调用口径是 strict=false：模型预测出「非法组合」时
+//! 不报错，按宽松分支原样保留。P/E 依赖已累积 norm 的最后一个字，
 //! 所以必须按顺序串行处理，不能对每个字符独立查表。
 
 use crate::char_tables::{

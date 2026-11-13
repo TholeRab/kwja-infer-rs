@@ -1,4 +1,4 @@
-//! 依存解析（`utils/dependency_parsing.py` ＋ `flat_dependency.py` 的移植）。
+//! 依存解析：DependencyManager 图结构与逐基本句接根算法。
 //!
 //! `DependencyManager` 是纯图结构：add_edge/remove_edge/has_cycle（DFS 找环）。
 //! `add_dependency` 对每个基本句按 topk 候选依次试接，成环或已有根时回退，
@@ -6,10 +6,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-/// `DEPENDENCY_TYPES` 的 0 号必须是 'D'（原 DepType.DEPENDENCY）。
+/// 依存类型表 0 号必须是 D（普通依存）。
 pub const DEPENDENCY_TYPE_D: usize = 0;
 
-/// `utils/dependency_parsing.py` 的 DependencyManager。
+/// 依存边集合管理器（DFS 判环）。
 #[derive(Debug, Default)]
 pub struct DependencyManager {
     directed_graph: HashMap<usize, HashSet<usize>>,
@@ -61,14 +61,14 @@ impl DependencyManager {
     }
 }
 
-/// 一条依存边候选：母节的全局词素下标 ＋ 依存类型下标。
+/// 一条依存边候选：母节的全局词素下标 + 依存类型下标。
 #[derive(Debug, Clone, Copy)]
 pub struct DepCandidate {
     pub parent_gi: usize,
     pub dep_type_idx: usize,
 }
 
-/// `add_dependency_plain`（flat_dependency.py:17-56）。
+/// 逐基本句接依存边；参数与返回值见下。
 ///
 /// `bps`：一句的基本句列表（ms 为窗内全局下标）；`head_gi_of_bp`：各基本句
 /// 主辞的全局词素下标；`dep_preds[head_gi]`：该主辞的 topk 候选（母节 gi、类型）。
@@ -99,8 +99,8 @@ pub fn add_dependency(
         let head_gi = head_gi_of_bp[bi];
         let cands = dep_preds.get(head_gi).map_or(&[][..], |v| v.as_slice());
         for cand in cands {
-            // ★上游是严格查表；这里 .get 跳过候选里不在本句的母节
-            // （含 [ROOT] 之外的 special，以及跨句词素——上游 mask 已挡掉大多数）。
+            // 参考实现是严格查表；这里 .get 跳过候选里不在本句的母节
+            // （含 [ROOT] 之外的 special，以及跨句词素——参考实现的 mask 已挡掉大多数）。
             let Some(&pidx) = gi2bp.get(&cand.parent_gi) else {
                 continue;
             };
@@ -133,8 +133,7 @@ pub fn add_dependency(
     )
 }
 
-/// `_resolve_plain`（flat_dependency.py:59-76）：先后向（source+1..n）再前向
-/// （source-1..0）找第一个不成环的接点，类型固定 'D'。
+/// 兜底接根：先后向（source+1..n）再前向（source-1..0）找第一个不成环的接点，类型固定 D。
 fn resolve(
     source: usize,
     n: usize,

@@ -1,14 +1,14 @@
-//! JumanDic（`utils/jumandic.py` 的 Rust 移植）：CDB 词典 ＋ grammar 反查表。
+//! JumanDic：CDB 词典 + grammar 反查表。
 //!
-//! 词典文件由导出脚本拷到 `assets/dicts/`：
+//! 词典文件在 assets/dicts/：
 //! - `jumandic.db`：key = surf，value = 定长 20 字节记录的拼接（`IIHHHHI`：
 //!   reading_id, lemma_id, pos_id, subpos_id, conjtype_id, conjform_id, semantics_id）
 //! - `jumandic_canon.db`：key = canon（代表表記），value 同上
-//! - `grammar.json`：id → 串 的反查表（id2reading / id2lemma / id2pos /
+//! - `grammar.json`：id 到字符串的反查表（id2reading / id2lemma / id2pos /
 //!   id2subpos / id2conjtype / id2conjform / id2semantics）
 //!
-//! CDB 是 D. J. Bernstein 的常量库格式：2048 字节头（256 个槽表指针）＋
-//! 槽表 ＋ (keylen, vallen, key, value) 记录。这里手写读取，不引依赖。
+//! CDB 是 D. J. Bernstein 的常量库格式：2048 字节头（256 个槽表指针）、
+//! 槽表、(keylen, vallen, key, value) 记录。这里手写读取，不引依赖。
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -48,10 +48,9 @@ impl Cdb {
         Ok(Self { data, tables })
     }
 
-    /// cdb 的哈希（cdb.txt）：`h = 5381` 起步，每字节 `h = ((h << 5) + h) ^ byte`。
-    /// ★末位是**异或**不是加法（pycdblib/djb_hash.py:5、cdb.txt 原文一致）。
-    /// 写成加法时所有 key 都落到错误槽位，查表静默返回空——
-    /// 实测整章 357 条 代表表記 全缺，却一条错误都不报。
+    /// cdb 的 djb2 哈希：h = 5381 起步，每字节 h = ((h << 5) + h) ^ byte。
+    /// 末位必须是异或不是加法：写成加法时所有 key 都落到错误槽位，
+    /// 查表会静默返回空，错误无法暴露。
     fn hash(key: &[u8]) -> u32 {
         let mut h: u32 = 5381;
         for &b in key {
@@ -91,8 +90,8 @@ impl Cdb {
             }
             let slot_hash = u32::from_le_bytes(self.data[slot_off..slot_off + 4].try_into().unwrap());
             let key_pos = u32::from_le_bytes(self.data[slot_off + 4..slot_off + 8].try_into().unwrap());
-            // ★空槽的判据是**记录哈希为 0**，不是记录位置为 0（cdblib/cdblib.py:198
-            //   的 `if not rec_h: break`）。拿位置判空会把正常槽当成空槽提前退出。
+            // 空槽的判据是记录哈希为 0，不是记录位置为 0；
+            // 拿位置判空会把正常槽当成空槽提前退出。
             if slot_hash == 0 {
                 return None;
             }
@@ -141,7 +140,7 @@ impl GrammarTables {
     }
 }
 
-/// JumanDic：两个 CDB ＋ grammar 反查表。
+/// JumanDic：两个 CDB 加 grammar 反查表。
 pub struct JumanDic {
     jumandic: Cdb,
     jumandic_canon: Cdb,

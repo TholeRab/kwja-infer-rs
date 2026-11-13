@@ -1,10 +1,10 @@
-//! Juman++ 文本解析（阶段 6 落地；Python 侧 `utils/flat_juman.py` 的对应物）。
+//! Juman++ 文本解析：把 char 阶段产出的 Juman++ 文本切成句子并取最小字段。
 //!
 //! word 阶段的输入是 char 阶段的产出：一句一段的 Juman++ 文本
-//! （`# S-ID:...` 注释行 ＋ 词素行 ＋ `EOS`）。本模块把它切成句子，
+//! （`# S-ID:...` 注释行加词素行加 `EOS`）。本模块把它切成句子，
 //! 并取出分窗需要的最小字段：sid（取自注释行，不重编）与各词素 surf
-//! （词素行首字段，按 rhoknp 的 `^([^ ]+| [^ ]*)` 取）。
-//! 词素其余字段（读方／原形／活用／意味素性…）阶段 7 做 KNP 输出时再解析。
+//! （词素行首字段）。
+//! 词素其余字段（读方、原形、活用、意味素性等）在拼 KNP 输出时再解析。
 
 /// 一条词素行解析后的最小集：surf/lemma 供分窗与 KNP 组装，raw 留档。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,15 +14,14 @@ pub struct MorphemeLine {
     pub raw: String,
 }
 
-/// 一句的解析结果（`flat_juman.parse_sentence` 的最小集）。
+/// 一句的解析结果。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ParsedSentence {
     pub sid: String,
     pub morphemes: Vec<MorphemeLine>,
 }
 
-/// 按 EOS 切成「一句一段」的文本（`flat_juman.split_sentences`，
-/// 对照 rhoknp utils/reader.py：空行丢弃，EOS 归入当前句）。
+/// 按 EOS 切成一句一段的文本：空行丢弃，EOS 归入当前句。
 pub fn split_sentences(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut buf: Vec<&str> = Vec::new();
@@ -43,8 +42,7 @@ pub fn split_sentences(text: &str) -> Vec<String> {
     out
 }
 
-/// 一段 Juman++ 文本（含注释行与 EOS）→ sid ＋ 词素行
-/// （`flat_juman.parse_sentence`）。
+/// 解析一段 Juman++ 文本（含注释行与 EOS），得到 sid 与词素行。
 ///
 /// 与 Python 同口径：注释行只保留最后一条；`@ ` 开头的同形行并入前一条词素；
 /// 遇到 EOS 停止。
@@ -57,12 +55,12 @@ pub fn parse_sentence(text: &str) -> ParsedSentence {
             continue;
         }
         if line.starts_with('#') {
-            // units/sentence.py:339-341：注释行赋给 comment（只保留最后一条）
+            // 注释行赋给 comment（只保留最后一条）
             comment = line.to_string();
             continue;
         }
         if line.starts_with("@ ") {
-            // morpheme.py:378-381 同形行：跟在某条词素行之后
+            // 同形行：跟在某条词素行之后
             pending.push(line);
             continue;
         }
@@ -83,7 +81,7 @@ pub fn parse_sentence(text: &str) -> ParsedSentence {
     }
 }
 
-/// `_flush`：首行是词素本行，其余是 `@ ` 同形行（原文保留）。
+/// 首行是词素本行，其余是 @ 开头的同形行（原文保留）。
 fn flush(lines: &[&str]) -> MorphemeLine {
     let raw = lines[0].to_string();
     MorphemeLine {
@@ -93,7 +91,7 @@ fn flush(lines: &[&str]) -> MorphemeLine {
     }
 }
 
-/// rhoknp morpheme.py:44-49 的 surf 段：`^([^ ]+| [^ ]*)`。
+/// 取词素行的 surf 段。
 /// 第二个分支处理「surf 本身以空格开头」的行（如半角空格词素）。
 pub fn surf_of_line(line: &str) -> Option<String> {
     let bytes = line.as_bytes();
@@ -140,12 +138,12 @@ pub fn lemma_of_line(line: &str) -> Option<String> {
     Some(rest2[..end].to_string())
 }
 
-/// rhoknp morpheme.py:310-311 的反转义：`\t`→制表符、`\␣`→空格。
+/// 反转义：\t 还原成制表符，\␣ 还原成空格。
 fn unescape(s: String) -> String {
     s.replace("\\t", "\t").replace("\\␣", " ")
 }
 
-/// `# S-ID:<sid> ...` → sid（`flat_juman.sid_of_comment`）。
+/// 从 # S-ID 注释行取出 sid。
 pub fn sid_of_comment(comment: &str) -> String {
     let bytes = comment.as_bytes();
     // 手写 `^#\s*S-ID:(\S+)`：跳过 # 与空白，取 S-ID: 后到下一空白为止

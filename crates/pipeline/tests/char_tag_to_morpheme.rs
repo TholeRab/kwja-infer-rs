@@ -1,7 +1,5 @@
-//! 阶段 3 闸（端到端）：三头 logits → argmax 标签 → 分句/分词/表层归一化 →
-//! Juman++ 行文本，与 Python（convert_char_predictions_into_tags ＋ flat_char 全链）
-//! 逐字符、逐词素、逐字节全等。fixtures 由
-//! 导出工具/导出Rust侧阶段3基准.py 现场算出。
+//! 端到端测试：三头 logits 经 argmax 标签、分句/分词/表层归一化，
+//! 产出 Juman++ 行文本，与 Python 参考实现逐字符、逐词素、逐字节全等。
 
 use kwja_pipeline::char_tags::{
     argmax, convert_char_predictions_into_tags, sentence_jumanpp, set_morphemes_plain,
@@ -66,7 +64,7 @@ fn char_tags_end_to_end_match_python() {
             .collect();
         assert_eq!(sentences, expected_sentences, "{name}: 分句不一致");
 
-        // 分词＋归一化
+        // 分词+归一化
         let morphemes = set_morphemes_plain(&sentences, &word_t, &norm_t);
         let expected_morphemes = case["expected_morphemes"].as_array().unwrap();
         assert_eq!(

@@ -1,13 +1,11 @@
-//! stride=2 分窗（阶段 6 落地）：`utils/sub_document.py` 的 `SequenceSplitter`
-//! 逐行移植 ＋ 目标句判定（`flat_word_document.target_sentence_flags`）。
+//! stride=2 分窗：SequenceSplitter 逐行移植，外加目标句判定。
 //!
-//! ★必须照抄上游算法，不许自己写贪心：word 阶段 `document_split_stride=2`
-//!   走的是 `search_sub_sequence_span` 的**滑窗分支**——每窗只前进 `stride` 句、
-//!   窗口大量重叠；首窗的 stride 是本窗句数（`end - prev_end`），子文档 id
-//!   据此带 `-s21i0` 这类后缀。窗数一错，目标句集合与后续 buffer 全错。
-//!   Python 侧实测（阶段一/导出Rust侧阶段6基准.py）：单章 12 窗、整书 4691 窗。
+//! 必须照抄参考算法，不许自己写贪心：word 阶段 document_split_stride=2
+//! 走的是 search_sub_sequence_span 的滑窗分支——每窗只前进 stride 句、
+//! 窗口大量重叠；首窗的 stride 是本窗句数（end - prev_end），子文档 id
+//! 据此带 -s21i0 这类后缀。窗数一错，目标句集合与之后各窗的 buffer 全错。
 
-/// `SpanCandidate`（sub_document.py:51-56）。
+/// 一个候选窗的跨度信息（起点、终点、长度与跨步）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpanCandidate {
     pub stride: i64,
@@ -16,7 +14,7 @@ pub struct SpanCandidate {
     pub end: usize,
 }
 
-/// `SequenceSplitter`（sub_document.py:59-155）。纯整数运算，逐行对照。
+/// SequenceSplitter：纯整数运算，逐行对照参考实现。
 pub struct SequenceSplitter {
     sequence_lengths: Vec<usize>,
     max_length: usize,
@@ -40,7 +38,7 @@ impl SequenceSplitter {
         }
     }
 
-    /// `split_into_spans`（生成器 → Vec；终止条件同为 prev_end < len）。
+    /// split_into_spans：生成器改成 Vec；终止条件同为 prev_end < len。
     pub fn split_into_spans(&self) -> Vec<SpanCandidate> {
         let mut spans: Vec<SpanCandidate> = Vec::new();
         let mut prev_start = 0usize;
@@ -54,7 +52,7 @@ impl SequenceSplitter {
         spans
     }
 
-    /// `search_sub_sequence_span`（sub_document.py:103-130），分支顺序照抄。
+    /// search_sub_sequence_span：分支顺序照抄参考实现。
     fn search_sub_sequence_span(
         &self,
         prev_start: usize,
@@ -94,8 +92,7 @@ impl SequenceSplitter {
         (self.choose_best_candidate(&candidates), candidates)
     }
 
-    /// `_search_end`（sub_document.py:132-138；Python 原式 `end + 1 <= len(...)`
-    /// 与 `end < len(...)` 整数等价）。
+    /// search_end：Python 原式 end + 1 <= len(...) 与 end < len(...) 整数等价。
     fn search_end(&self, start: usize, initial: usize) -> usize {
         let mut end = initial;
         while end < self.sequence_lengths.len()
@@ -115,14 +112,13 @@ impl SequenceSplitter {
         }
     }
 
-    /// `_get_sub_sequence_length`：累计长度作差。
+    /// 子序列长度：累计长度作差。
     fn sub_sequence_length(&self, start: usize, end: usize) -> usize {
         self.cumulative_lengths[end] - self.cumulative_lengths[start]
     }
 
-    /// `_choose_best_candidate`（sub_document.py:146-147）。
-    /// Python `sorted(..., reverse=True)[0]` 是稳定排序：并列时取**先出现**的，
-    /// 因此这里用「严格大于才替换」，不能用 `max_by`（它取最后一个并列项）。
+    /// 候选择优：Python sorted(..., reverse=True)[0] 是稳定排序，并列时取先出现的，
+    /// 因此这里用「严格大于才替换」，不能用 max_by（它取最后一个并列项）。
     fn choose_best_candidate(&self, candidates: &[SpanCandidate]) -> SpanCandidate {
         assert!(!candidates.is_empty(), "候选窗为空（上游会 IndexError）");
         let mut best = &candidates[0];
@@ -137,7 +133,7 @@ impl SequenceSplitter {
         best.clone()
     }
 
-    /// `_get_priority_score`（sub_document.py:149-155）。
+    /// 候选优先级打分。
     fn priority_score(&self, span: &SpanCandidate) -> i64 {
         if span.length <= self.max_length {
             let weight = self.max_length as i64 + 1; // 任意更大的数都行
@@ -148,9 +144,8 @@ impl SequenceSplitter {
     }
 }
 
-/// `target_sentence_flags`（`flat_word_document.py:95-112`，判据出自
-/// `utils/sub_document.py:26-33`）：doc_id 不带 `-s{stride}i{idx}` 后缀时
-/// 全部是目标句；带后缀时，末尾 stride 句是目标句。
+/// 目标句判定：doc_id 不带 -s{stride}i{idx} 后缀时全部是目标句；
+/// 带后缀时，末尾 stride 句是目标句。
 pub fn target_sentence_flags(doc_id: &str, n_sentences: usize) -> Vec<bool> {
     match sub_doc_pattern().captures(doc_id) {
         Some(caps) => {
@@ -161,7 +156,7 @@ pub fn target_sentence_flags(doc_id: &str, n_sentences: usize) -> Vec<bool> {
     }
 }
 
-/// `SUB_DOC_PAT`（sub_document.py:14；与 char_stage::to_orig_doc_id 同源正则）。
+/// 子文档 id 正则（与 char_stage::to_orig_doc_id 同源）。
 fn sub_doc_pattern() -> &'static regex::Regex {
     static PAT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     PAT.get_or_init(|| {

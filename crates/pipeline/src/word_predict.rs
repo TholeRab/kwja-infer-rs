@@ -1,14 +1,14 @@
-//! word 阶段推理编排（阶段 7）：Juman++ 文本 → 13 头 → KNP 文本。
+//! word 阶段推理编排：Juman++ 文本经 13 头解码得到 KNP 文本。
 //!
-//! 流程照抄 `WordModuleWriter` 扁平链（`word_module_writer.py`）：
-//! 1. 解析 → 分窗（阶段 6 的 `split_flat_word_document`）
-//! 2. 每窗：编码（special 追加＋pad）→ ONNX encoder → FIRST 池化 → 13 头
-//! 3. 解码：读音（token 级 argmax → 词级归并）、四路属性（掩码 argmax）、
+//! 流程照抄参考实现的扁平链：
+//! 1. 解析与分窗（split_flat_word_document）
+//! 2. 每窗：编码（special 追加加 pad）、ONNX encoder、FIRST 池化、13 头
+//! 3. 解码：读音（token 级 argmax 后按词归并）、四路属性（掩码 argmax）、
 //!    NE（CRF Viterbi）、词素/基本句素性（多标签 sigmoid 阈值）、
-//!    依存（topk＋类型 argmax＋成环回退）、cohesion（掩码 gather argmax）、
+//!    依存（topk、类型 argmax、成环回退）、cohesion（掩码 gather argmax）、
 //!    談話関係（softmax 阈值）
-//! 4. 组装：切分（chunk_plain）→ 三小步（只作用目标句）→ 合并体视图
-//!    （缓冲句用**首次那窗**的结构，坐标平移对齐）→ cohesion/discourse
+//! 4. 组装：切分（chunk_plain）、三小步（只作用目标句）、合并体视图
+//!    （缓冲句用首次那窗的结构，坐标平移对齐）、cohesion/discourse
 //! 5. 缓冲：首窗定稿（first-window-wins），按插入序渲染 KNP
 
 use rayon::prelude::*;
@@ -46,7 +46,7 @@ pub struct WordPredictor {
     max_token_length: usize,
     stride: i64,
     crf: CrfParameters,
-    /// 后端与头前向：头前向的 GPU 后端（ORT 融合图或 cuBLAS 直调）；权重缺失或 CPU 设备时为 None。
+    /// 头前向的 GPU 后端（ORT 融合图或 cuBLAS 直调）；权重缺失或 CPU 设备时为 None。
     gpu_heads: Option<kwja_heads::gpu_backend::GpuHeadsBackend>,
 }
 
@@ -60,7 +60,7 @@ impl WordPredictor {
         heads.validate()?;
         let jumandic = JumanDic::load(&assets_dir.join("dicts/jumandic"))?;
         let jinf = Jinf::load(&assets_dir.join("dicts"))?;
-        // tokenizer：8 个 additional specials（含 " "）＋ 数据集的 7 个
+        // tokenizer：8 个 additional specials（含 " "）加数据集的 7 个
         let additional: Vec<&str> = tables.special_tokens.iter().map(|s| s.as_str()).collect();
         let dataset_specials = tables.dataset_special_tokens();
         let tokenizer = WordTokenizer::load(
@@ -70,7 +70,7 @@ impl WordPredictor {
             max_seq_length,
         )?;
         // max_token_length = max_seq_length - len(extra_special_tokens) - 2
-        //（word_inference.py:115；extra = 8 个 additional specials）
+        //（extra 即 8 个 additional specials）
         let max_token_length = max_seq_length - additional.len() - 2;
         let num_tags = heads.num_ne_tags;
         let crf = CrfParameters {
@@ -95,22 +95,21 @@ impl WordPredictor {
         })
     }
 
-    /// 后端与头前向：把头前向切到 GPU 后端（ORT 融合图或 cuBLAS 直调）。
+    /// 把头前向切到 GPU 后端（ORT 融合图或 cuBLAS 直调）。
     pub fn set_gpu_heads(&mut self, gpu_heads: Option<kwja_heads::gpu_backend::GpuHeadsBackend>) {
         self.gpu_heads = gpu_heads;
     }
 
-    /// 一份 char 产出（Juman++ 文本）→ KNP 文本（对应一次 predict 批）。
+    /// 一份 char 产出（Juman++ 文本）转成 KNP 文本（对应一次 predict 批）。
     pub fn predict_text(
         &mut self,
         encoder: &mut dyn Encoder,
         juman_text: &str,
     ) -> Result<String, String> {
-        // ★必须按文档切分后再逐文档滑窗（parse_jumanpp_documents_by_doc，
-        //   上游 word_inference.py:41-44 的 chunk_by_document 口径）。以前这里
-        //   把整份输入当一个文档（doc_id="0"）滑窗，窗口序列与上游不一致
-        //   （整书 4357→4691 窗），每窗边界句的上下文全变——953 处词元差异
-        //   的根因。sid 取自注释行、跨文档唯一 ⇒ owner/order/账本无需按文档隔离。
+        // 必须按文档切分后再逐文档滑窗（见 parse_jumanpp_documents_by_doc）。
+        // 若把整份输入当一个文档滑窗，窗口序列与参考实现不一致，
+        // 每窗边界句的上下文全变。sid 取自注释行、跨文档唯一，
+        // owner/order/缓冲区无需按文档隔离。
         let documents = parse_jumanpp_documents_by_doc(juman_text);
         let mut windows: Vec<WordWindow> = Vec::new();
         for document in &documents {
@@ -124,30 +123,28 @@ impl WordPredictor {
 
         let dbg = std::env::var("KWJA_TIMING").is_ok();
 
-        // ---- 分段消化：每段 SEGMENT 个窗，段内「串行编码 → 并行解码 → 并行合并」----
-        // ★为什么必须分段：每窗解码产物带 cohesion/discourse 投影矩阵
-        //   （约 8–15 MB/窗），整书 4691 窗全部驻留就是几十 GB——
-        //   31.6 GB 的机器实测直接内存爆掉、系统换页卡死（ 整书闸）。
-        //   分段后峰值 ≈ 一段投影（64 × 15 MB ≈ 1 GB）＋ 全量小数据
-        //   （chunks/sids/ranges，约 0.2 MB/窗）＋ 账本本身。
-        // ★不改逐字节结果：owner/order 仍按窗序「首窗定稿」增量登记，
-        //   合并仍按窗序落账；各窗合并互不依赖（见 absorb_one 注），段边界
+        // ---- 分段消化：每段 SEGMENT 个窗，段内串行编码、并行解码、并行合并 ----
+        // 为什么必须分段：每窗解码产物带 cohesion/discourse 投影矩阵
+        //   （约 8-15 MB/窗），全量驻留会到几十 GB，内存装不下。
+        //   分段后峰值约为一段投影（64 窗、每窗约 15 MB，约 1 GB）加全量小数据
+        //   （chunks/sids/ranges，约 0.2 MB/窗）加缓冲区本身。
+        // 不改逐字节结果：owner/order 仍按窗序「首窗定稿」增量登记，
+        //   合并仍按窗序写入；各窗合并互不依赖（见 absorb_one 注），段边界
         //   只是让投影早一点死，计算内容与全量版完全相同。
         const SEGMENT: usize = 64;
         let mut buf = Buffer::default();
         // 非跳过窗的小数据（chunks/sids/ranges），下标 = 非跳过窗序号；
-        // 后续窗的合并体视图要读「owner 窗」的这三样，所以全量驻留。
+        // 其他窗的合并体视图要读「owner 窗」的这三样，所以全量驻留。
         let mut keeps: Vec<WinKeep> = Vec::with_capacity(windows.len());
-        // 三段耗时改用原子累计（C1 里三段在不同线程各自计时；单位微秒）
+        // 三段耗时改用原子累计（三段在不同线程各自计时；单位微秒）
         let prep_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let dec_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let abs_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-        // ★双缓冲：三级流水。编码（独占 encoder，串行 GPU）、
+        // 三级流水：编码（独占 encoder，串行 GPU）、
         //   解码（&self，rayon 并行 CPU）、合并（&self，rayon 并行 CPU）
-        //   三阶段重叠：段 N 合并时，段 N+1 在解码，段 N+2 在编码。
-        //   scoped thread 各占一阶段，段引用与产物走有界通道（各限 1 段，
+        //   三段重叠：段 N 合并时，段 N+1 在解码，段 N+2 在编码。
+        //   scoped thread 各占一段，段引用与产物走有界通道（各限 1 段，
         //   内存在界）；各段计算内容与串行版相同，逐字节结果不变。
-        //   理论墙钟下限＝max(三段总耗时)，收益上限即「被掩盖的两段」。
         let pred: &WordPredictor = self; // 各线程只用共享借用（&mut self 只为兼容旧签名）
         std::thread::scope(|scope| -> Result<(), String> {
             let chunks: Vec<&[WordWindow]> = windows.chunks(SEGMENT).collect();
@@ -162,7 +159,7 @@ impl WordPredictor {
             let encoder: &mut dyn Encoder = &mut *encoder;
             let prep_ms = prep_ms.clone();
             // 编码线程：独占型后端（ORT session，&mut）逐段串行；共享型后端
-            //（tract 计划 Sync）把整段窗撒到 rayon 池按窗并行——与解码/合并
+            //（tract 后端，实现 Sync）把整段窗撒到 rayon 池按窗并行——与解码/合并
             // 同一个池、同一批核，不再有 ORT CPU EP 的第二线程池抢核。
             scope.spawn(move || {
                 for chunk in req_rx {
@@ -181,7 +178,7 @@ impl WordPredictor {
                     }
                 }
             });
-            // 解码线程：13 头 ＋ 切分 ＋ NE ＋ 依存（窗间独立、`&self` 不写共享状态）
+            // 解码线程：13 头 + 切分 + NE + 依存（窗间独立、&self 不写共享状态）
             let dec_ms = dec_ms.clone();
             scope.spawn(move || {
                 for (chunk, preps) in prep_rx {
@@ -214,8 +211,8 @@ impl WordPredictor {
                 }
             }
             drop(req_tx); // 编码线程随之收尾
-            // 主线程＝合并阶段：段 N 合并与段 N+1 解码、段 N+2 编码重叠。
-            // owner/order 仍按段序登记（首窗定稿），落账按窗序，逐字节结果不变。
+            // 主线程做合并：段 N 合并与段 N+1 解码、段 N+2 编码重叠。
+            // owner/order 仍按段序登记（首窗定稿），结果按窗序写入，逐字节结果不变。
             for _ in 0..chunks.len() {
                 let outs = dec_rx.recv().map_err(|_| "解码线程意外退出".to_string())??;
                 let t = std::time::Instant::now();
@@ -265,13 +262,13 @@ impl WordPredictor {
         Ok(rendered)
     }
 
-    /// 一段窗：分词 ＋ 编码器前向，**按批**跑（独占型后端：ORT session，&mut）。
+    /// 一段窗：分词与编码器前向，按批跑（独占型后端：ORT session，&mut）。
     ///
-    /// ★分词不碰后端，先逐窗做完；再把 batch 个窗拼成 [N, seq] 一次前向——
-    ///   `encode_window` 恒定补到 max_seq_length，长度一致才能拼。与 Python 侧
-    ///   同款 batch=4（环境变量 KWJA_BATCH 可覆盖）；attention mask 隔离批内
-    ///   他窗，argmax 结果与逐窗前向相同（分级闸 ch1/3ch 逐字节复核）。
-    ///   超长窗照 word_inference.py:118-121 跳过（不产出任何内容）。
+    /// 分词不碰后端，先逐窗做完；再把 batch 个窗拼成 [N, seq] 一次前向——
+    ///   encode_window 恒定补到 max_seq_length，长度一致才能拼。
+    ///   默认 batch=4（环境变量 KWJA_BATCH 可覆盖）；attention mask 隔离批内
+    ///   他窗，argmax 结果与逐窗前向相同。
+    ///   超长窗跳过（不产出任何内容）。
     fn prep_windows_serial(
         &self,
         encoder: &mut dyn Encoder,
@@ -281,7 +278,7 @@ impl WordPredictor {
         let mut encodings: Vec<Option<WindowEncoding>> = Vec::with_capacity(windows.len());
         for window in windows {
             let encoding = self.tokenizer.encode_window(&window.surfs())?;
-            // 超长窗：word_inference.py:118-121 warning + continue
+            // 超长窗跳过（参考实现先打 warning 再 continue，这里只 continue）
             if encoding.num_tokens > self.max_seq_length - n_specials {
                 encodings.push(None);
             } else {
@@ -341,8 +338,8 @@ impl WordPredictor {
         Ok(preps)
     }
 
-    /// ★并行预备（rust-encoder-no-ort）：tract 计划 Sync，分词与编码按窗
-    /// 撒到 rayon 池上并发——编码与解码/合并共用同一批核、同一个池。
+    /// 并行预备：tract 后端实现 Sync，分词与编码按窗撒到 rayon 池上并发
+    /// ——编码与解码/合并共用同一批核、同一个池。
     /// 每窗计算内容与串行版相同，逐字节结果不变；超长窗照旧跳过。
     fn prep_windows_parallel(
         &self,
@@ -355,7 +352,7 @@ impl WordPredictor {
                 let surfs = window.surfs();
                 let encoding = self.tokenizer.encode_window(&surfs)?;
                 let n_specials = self.tables.dataset_special_tokens().len();
-                // 超长窗：word_inference.py:118-121 warning + continue
+                // 超长窗跳过（参考实现先打 warning 再 continue，这里只 continue）
                 if encoding.num_tokens > self.max_seq_length - n_specials {
                     return Ok(None);
                 }
@@ -377,11 +374,11 @@ impl WordPredictor {
     }
 
 
-    /// 阶段一-B（可并行）：13 头 ＋ 切分 ＋ NE ＋ 依存候选。
+    /// 解码一个窗：13 头 + 切分 + NE + 依存候选。
     ///
-    /// ★`&self`，不写任何共享状态，所以窗与窗之间可以铺满所有核。
-    ///   原先这段与编码绑在同一个 `&mut self` 函数里，一次只能跑一个窗，
-    ///   并行度被锁在「一个窗里的 8 个头」，8 个任务用 12 个线程，占用率上不去。
+    /// &self，不写任何共享状态，所以窗与窗之间可以铺满所有核。
+    ///   原先这段与编码绑在同一个 &mut self 函数里，一次只能跑一个窗，
+    ///   并行度上不去。
     fn decode_window(
         &self,
         window: &WordWindow,
@@ -408,9 +405,9 @@ impl WordPredictor {
             .collect();
 
         // ---- 读音 + 其余头：一个并行组 ----
-        // ★reading 吃 hidden_rows、其余头吃 pooled，互不依赖；
-        //   reading 有 12907 个输出类别，单跑就 85 ms，是组里最大的一块。
-        //   组内只算 logits/概率，argmax 与后续归并留在组外串行做——
+        // reading 吃 hidden_rows、其余头吃 pooled，互不依赖；
+        //   reading 输出类别最多、计算最重。
+        //   组内只算 logits/概率，argmax 与之后的归并留在组外串行做——
         //   那些依赖前一步结果，并行没有意义。
         let h = &self.heads;
         const T_READING: usize = 0;
@@ -421,11 +418,11 @@ impl WordPredictor {
         const T_WF: usize = 5;
         const T_NE: usize = 6;
         const T_BF: usize = 7;
-        // ★计算量方向：这些头下游只读词素行——
+        // 这些头下游只读词素行——
         //   pos/subpos/conjtype/conjform 下游显式取 [..n_morphemes]，
         //   wf 的 chunk_plain、bf 的 add_bp_features 也只按词素/主辞下标取行，
         //   reading 只被 rmap 里真词素的 token 位读（填充与 special 位从不读）。
-        //   forward_rows 是逐行 matvec、行与行独立 ⇒ 只算这些行，结果逐字节相同。
+        //   forward_rows 是逐行 matvec、行与行独立，只算这些行结果逐字节相同。
         //   NE 例外：它走全序列 Viterbi（掩码路径跨整窗），保持原样。
         let token_rows = &hidden_rows[..encoding.num_tokens];
         let morph_rows = &pooled[..n_morphemes];
@@ -436,7 +433,7 @@ impl WordPredictor {
         let gpu_out: Option<kwja_heads::gpu_heads::FusedHeadsOutput> =
             match self.gpu_heads.as_ref() {
                 Some(g) => {
-                    // ★pooled 只送「真词素＋special 区」——其后的填充行没有任何
+                    // pooled 只送「真词素+special 区」——其后的填充行没有任何
                     //   消费者（依存/cohesion/discourse 的行列下标全都 < 这里），
                     //   GPU 的投影与 reading 计算量随行数走，不送白算的填充行。
                     let usable = n_morphemes + self.tables.dataset_special_tokens().len();
@@ -461,11 +458,11 @@ impl WordPredictor {
                 )
             }
             None => {
-                // ★九个头的耗时不均匀（reading 85 ms、bp_feature 109 ms、其余 6–20 ms），
-                //   二叉 join 会把大块和小块切到一起，rayon 只能按切分树并行，
-                //   实测 CPU 只用四成。改为扁平任务表交给 par_iter，由线程池自己调度。
-                //   ★必须是 IndexedParallelIterator（用 collect 到 Vec），顺序才有保证。
-                //   组内只算 logits/概率，argmax 与后续归并留在组外串行做——
+                // 九个头的耗时不均匀，二叉 join 会把大块和小块切到一起，
+                //   rayon 只能按切分树并行，CPU 利用率低。改为扁平任务表交给
+                //   par_iter，由线程池自己调度。
+                //   必须是 IndexedParallelIterator（用 collect 到 Vec），顺序才有保证。
+                //   组内只算 logits/概率，argmax 与之后的归并留在组外串行做——
                 //   那些依赖前一步结果，并行没有意义。
                 let outs: Vec<Vec<Vec<f32>>> = (0..8usize)
                     .into_par_iter()
@@ -565,12 +562,10 @@ impl WordPredictor {
 
         // ---- NE（只作用目标句）----
         //
-        // ★掩码是**整窗全部目标句**，不是当前这一句。
-        //   Python 侧的 ne_mask 来自 target_mask，按 analysis_target_morpheme_indices
-        //   一次性标满（word_inference.py:175-177、:233），Viterbi 跑**一次**。
-        //   原先这里逐句重建掩码、逐句跑 Viterbi，于是每句都被当成「窗口里唯一的目标段」，
-        //   解码路径就变了：一个窗只有一个目标句时两者恰好等价（第 1 章没暴露），
-        //   一窗多个目标句时就多报实体——3 章闸实测「昨日」多出 <NE:DATE>。
+        // 掩码是整窗全部目标句，不是当前这一句：
+        //   ne_mask 按 target_mask 一次性标满，Viterbi 只跑一次。
+        //   若逐句重建掩码、逐句跑 Viterbi，每句都被当成窗口里唯一的目标段，
+        //   一窗多个目标句时会多报实体。
         let mut ne_mask = vec![false; self.max_seq_length];
         for (si, tgt) in tgt_flags.iter().enumerate() {
             if *tgt {
@@ -603,7 +598,7 @@ impl WordPredictor {
             }
         }
 
-        // ---- 基本句素性＋三小步之 節-区切/節-主辞（只作用目标句）----
+        // ---- 基本句素性+三小步之 節-区切/節-主辞（只作用目标句）----
         for (si, tgt) in tgt_flags.iter().enumerate() {
             if !tgt {
                 continue;
@@ -626,12 +621,11 @@ impl WordPredictor {
             eprintln!("      NE+bp_features {:.1} ms", t_ne.elapsed().as_secs_f64() * 1000.0);
         }
         let t_dep = std::time::Instant::now();
-        // ---- 依存（只作用目标句；topk＋类型＋成环回退）----
-        // ★[ROOT] 在 special_tokens 里的位置是**第 6 个**（[著者] [読者] [不特定:人]
-        //   [不特定:物] [NULL] [NA] [ROOT]），不是第 0 个。Python 侧取的是
-        //   special_token_indexer.get_morpheme_level_index("[ROOT]")（word_inference.py:180），
-        //   即 num_morphemes + 该下标。写成 num_morphemes 会让依存掩码把根画到
-        //   [著者] 列上，整章 parent 全错（实测第 1 章 72 处基本句行、8 处文节行）。
+        // ---- 依存（只作用目标句；topk+类型+成环回退）----
+        // [ROOT] 在 special_tokens 里排第 6（[著者] [読者] [不特定:人]
+        //   [不特定:物] [NULL] [NA] [ROOT]），不是第 0 个：
+        //   root_gi = num_morphemes + 该下标。写成 num_morphemes 会让依存掩码
+        //   把根画到 [著者] 列上，整章 parent 全错。
         let root_offset = self
             .tables
             .dataset_special_tokens()
@@ -640,7 +634,7 @@ impl WordPredictor {
             .expect("special_tokens 里没有 [ROOT]");
         let root_gi = n_morphemes + root_offset;
         let t_proj = std::time::Instant::now();
-        // 三组投影一次装配，GPU 输出**移动**进来——原先逐字段 clone，
+        // 三组投影一次装配，GPU 输出移动进来——原先逐字段 clone，
         // 每窗白拷约 20MB 的投影矩阵。
         let (dep_proj, cohesion_proj, discourse_proj) = match gpu_out {
             Some(o) => (
@@ -674,13 +668,13 @@ impl WordPredictor {
             let bps: Vec<&BasePhrase> =
                 chunks[si].phrases.iter().flat_map(|p| &p.bps).collect();
             let head_gis: Vec<usize> = bps.iter().map(|b| b.head_gi).collect();
-            // 每个主辞行：掩码 → topk 候选 → 类型 argmax
+            // 每个主辞行：先掩码，再取 topk 候选，最后做类型 argmax
             let mut dep_preds: Vec<Vec<DepCandidate>> = vec![Vec::new(); self.max_seq_length];
             let mask = dependency_mask(&ranges, si, root_gi, self.max_seq_length);
-            // ★行与行独立，并行算（dependency 单窗 70–800 ms，是这里最大的一块）。
+            // 行与行独立，并行算（dependency 是单窗里最重的一块）。
             //   par_iter 保序，dep_preds 的下标与串行一致。
-            //   topk 前的行 logits 仍是 CPU 小点积；topk 出的全部 (主辞,候选) 对
-            //   攒成 (P,1536) 一次过 GPU（dep_type.onnx），argmax 语义不变。
+            //   topk 前的行 logits 仍是 CPU 小点积；topk 出的全部（主辞,候选）对
+            //   攒成一个批次一次过 GPU（dep_type.onnx），argmax 语义不变。
             let rows: Vec<(usize, Vec<DepCandidate>)> = match self.gpu_heads.as_ref() {
                 Some(g) => {
                     let topks: Vec<(usize, Vec<usize>)> = head_gis
@@ -757,7 +751,7 @@ impl WordPredictor {
         }
         // ---- cohesion / discourse 的投影（已在上面与 dep_proj 一并装配）----
 
-        // 词素 → 句序（cohesion 同句判据）
+        // 词素下标到句序（cohesion 同句判据）
         let mut sent_of_morpheme = vec![0usize; self.max_seq_length];
         for (si, (lo, hi)) in ranges.iter().enumerate() {
             sent_of_morpheme[*lo..*hi].fill(si);
@@ -774,9 +768,8 @@ impl WordPredictor {
                 dep,
                 cohesion_proj: Some(cohesion_proj),
                 discourse_proj: Some(discourse_proj),
-            // ★cohesion 的 special 候选列不含 [ROOT]：Python 侧取
-            //   get_morpheme_level_indices(only_cohesion=True)，把 [ROOT] 滤掉了
-            //   （[ROOT] 是依存树的虚拟根，不参与指代消解）。多给一列会让 argmax
+            // cohesion 的 special 候选列不含 [ROOT]：
+            //   [ROOT] 是依存树的虚拟根，不参与指代消解。多给一列会让 argmax
             //   落到一个本不该存在的候选上，整章 rel 全错。
                 cohesion_special_indices: self
                     .tables
@@ -792,7 +785,7 @@ impl WordPredictor {
     }
 }
 
-/// 读音归并（`utils/reading_prediction.py` 的 get_word_level_readings）。
+/// 读音归并：token 级读音按 subword_map 归并到词素。
 fn get_word_level_readings(
     readings: &[&str],
     tokens: &[String],
@@ -821,7 +814,7 @@ fn get_word_level_readings(
     ret
 }
 
-/// 依存掩码：目标句的块对角（除对角线）＋ [ROOT] 列（扁平 seq×seq）。
+/// 依存掩码：目标句的块对角（除对角线）+ [ROOT] 列（扁平化的 seq 行 seq 列）。
 fn dependency_mask(ranges: &[(usize, usize)], si: usize, root_gi: usize, seq: usize) -> Vec<bool> {
     let mut mask = vec![false; seq * seq];
     let (lo, hi) = ranges[si];
@@ -834,9 +827,9 @@ fn dependency_mask(ranges: &[(usize, usize)], si: usize, root_gi: usize, seq: us
     mask
 }
 
-/// 依存一行的 topk 候选：只对掩码放行的列算 logits（[`kwja_heads::forward::SelectionProjection::row_gathered`]
-/// 与整行逐元素相同），掩掉的列保持 MASKED。掩码只放开**同句词素＋[ROOT]**，
-/// 比算满整窗 246 列少一个数量级的 gelu，而 topk 结果与「算完整行再掩」一致。
+/// 依存一行的 topk 候选：只对掩码放行的列算 logits（row_gathered 与整行逐元素相同），
+/// 掩掉的列保持 MASKED。掩码只放开同句词素加 [ROOT]，
+/// 比算满整窗少一个数量级的 gelu，而 topk 结果与算完整行再掩一致。
 fn dependency_topk_masked(
     dep_proj: &kwja_heads::forward::SelectionProjection,
     hg: usize,
@@ -867,7 +860,7 @@ fn topk_indices(row: &[f32], k: usize) -> Vec<usize> {
     idx
 }
 
-/// `-s\d+i\d+-` → `-`（writer 的 _strip_doc；不能剥 `2026xxxxxxxx-N-` 前缀）。
+/// 把 sid 里的 -s\d+i\d+- 窗标记替换回 -；不能剥 2026xxxxxxxx-N- 这类日期前缀。
 fn strip_subdoc(sid: &str) -> String {
     static PAT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let pat = PAT.get_or_init(|| {
@@ -888,13 +881,13 @@ fn argmax(row: &[f32]) -> usize {
     best
 }
 
-/// 阶段一-A 的产物：分词结果 ＋ 编码器输出。
+/// 编码预备的产物：分词结果 + 编码器输出。
 struct WindowPrep {
     encoding: WindowEncoding,
     hidden: ndarray::Array3<f32>,
 }
 
-/// 解码产物·跨窗保留的小数据：后续窗的合并体视图要读 owner 窗的这三样。
+/// 解码产物（跨窗保留的小数据）：之后的窗的合并体视图要读 owner 窗的这三样。
 /// 全量驻留也只有约 0.2 MB/窗；大投影不在此列（随段释放，见 predict_text）。
 struct WinKeep {
     chunks: Vec<Chunk>,
@@ -902,7 +895,7 @@ struct WinKeep {
     ranges: Vec<(usize, usize)>,
 }
 
-/// 解码产物·只在本窗合并期用的大件（投影矩阵约 8–15 MB/窗），段末即释放。
+/// 解码产物（只在本窗合并期用的大件，投影矩阵约 8-15 MB/窗），段末即释放。
 struct WinBig {
     flat: Vec<FlatMorpheme>,
     tgt_flags: Vec<bool>,
@@ -913,7 +906,7 @@ struct WinBig {
     sent_of_morpheme: Vec<usize>,
 }
 
-/// 合并体里的基本句视图（renumber 的扁平版）。
+/// 合并体里的基本句视图（扁平化的重新编号）。
 struct DocBp {
     sid: String,
     index: usize,
@@ -941,8 +934,8 @@ struct Buffer {
     dis_rows: HashMap<(String, usize), String>,
 }
 
-/// 一次窗合并的产物：渲染要用的本窗留档 ＋ 三类行。
-/// 由 [`absorb_one`] 按窗并行产出，[`Buffer::fold`] 按窗序落账。
+/// 一次窗合并的产物：渲染要用的本窗留档与三类行。
+/// 由 absorb_one 按窗并行产出，Buffer::fold 按窗序写入。
 struct AbsorbedWin {
     win: StoredWin,
     rel_rows: HashMap<(String, usize), Vec<RelRow>>,
@@ -950,10 +943,9 @@ struct AbsorbedWin {
     dep_rows: HashMap<String, (Vec<i32>, Vec<usize>)>,
 }
 
-/// owner/order 登记（原串行 absorb 第 1/7 步）：sid 的 owner ＝ 它首次作为
-/// 目标句出现的窗（**非跳过窗**里的序号，与渲染时的 `wins` 下标一致）。
-/// 按窗序逐窗调用即等价于原来的一次性预计算；目标句集合按窗不重叠，
-/// 首窗定稿语义不变。
+/// owner/order 登记：sid 的 owner 是它首次作为目标句出现的窗
+/// （非跳过窗序号，与渲染时的 wins 下标一致）。
+/// 按窗序逐窗调用；目标句集合按窗不重叠，首窗定稿语义不变。
 fn register_owner(
     win: usize,
     sids: &[String],
@@ -969,12 +961,12 @@ fn register_owner(
     }
 }
 
-/// 单窗合并（原 `Buffer::absorb` 的第 2–6 步）。
+/// 单窗合并。
 ///
-/// ★只读三样：本窗解码产物（`keep`＋`big`）、已登记的 `owner`、之前各窗的
-///   小数据 `live`（合并体视图里缓冲句的 chunk 来源）。不碰任何累积账本 ⇒
-///   窗与窗可并行。产出的行按窗序 [`Buffer::fold`] 落账；目标键按窗不重叠，
-///   落账顺序不影响结果。
+/// 只读三样：本窗解码产物（keep 加 big）、已登记的 owner、之前各窗的
+///   小数据 live（合并体视图里缓冲句的 chunk 来源）。不写任何累积状态，
+///   窗与窗可并行。产出的行由 Buffer::fold 按窗序并入；目标键按窗不重叠，
+///   并入顺序不影响结果。
 fn absorb_one(
     win: usize,
     keep: &WinKeep,
@@ -1018,7 +1010,7 @@ fn absorb_one(
         }
     }
 
-    // 4) cohesion（目标 = 本窗目标句的基本句；候选 = 合并体全部基本句＋special）
+    // 4) cohesion（目标 = 本窗目标句的基本句；候选 = 合并体全部基本句+special）
     let tgt_sids: HashSet<&str> = keep
         .sids
         .iter()
@@ -1031,7 +1023,7 @@ fn absorb_one(
         .filter(|b| tgt_sids.contains(b.sid.as_str()))
         .map(|b| (b.sid.clone(), b.index))
         .collect();
-    // 本窗目标键此前不存在于账本（键按窗唯一），原先「先清再加」在落账侧做
+    // 本窗目标键此前不存在于缓冲（键按窗唯一），先清再加由 fold 统一处理
     let mut rel_rows: HashMap<(String, usize), Vec<RelRow>> = HashMap::new();
     {
         let cohesion_proj = big.cohesion_proj.as_ref().expect("cohesion 投影缺失");
@@ -1048,8 +1040,8 @@ fn absorb_one(
             bp_feats: &bp_feats,
         };
         let sent_of_morpheme = &big.sent_of_morpheme;
-        // ★只给「目标句的基本句」算 cohesion 行——合并体里其余基本句的行
-        //   在落账侧本来就被 targets 过滤丢弃，先不算才是纯省计算，结果不变。
+        // 只给「目标句的基本句」算 cohesion 行——合并体里其余基本句的行
+        //   在过滤侧本来就被 targets 过滤丢弃，先不算才是纯省计算，结果不变。
         let wanted: Vec<bool> = doc_bps
             .iter()
             .map(|b| targets.contains(&(b.sid.clone(), b.index)))
@@ -1116,9 +1108,9 @@ fn absorb_one(
 }
 
 impl Buffer {
-    /// 按窗序落账：把 [`absorb_one`] 的产物并进累积账本。
-    /// 目标键按窗不重叠 ⇒ rel/dis 的 insert 等价于原先的「先清再加」；
-    /// dep 保留 `or_insert` 的首窗定稿语义。wins 必须按窗序 push
+    /// 按窗序把 absorb_one 的产物并入累积缓冲。
+    /// 目标键按窗不重叠，rel/dis 用 insert 即可；
+    /// dep 保留 or_insert 的首窗定稿语义。wins 必须按窗序 push
     /// （渲染按 owner 下标取窗）。
     fn fold(&mut self, a: AbsorbedWin) {
         for (key, rows) in a.rel_rows {
@@ -1133,7 +1125,7 @@ impl Buffer {
         self.wins.push(a.win);
     }
 
-    /// 渲染整份 KNP 文本（`_flush` ＋ `_flat_lines`）。
+    /// 渲染整份 KNP 文本。
     fn render(&self, tables: &WordTables) -> String {
         let mut lines: Vec<String> = Vec::new();
         for sid in &self.order {
@@ -1147,7 +1139,7 @@ impl Buffer {
                 .unwrap_or_else(|| (Vec::new(), Vec::new()));
             lines.push(format!("# S-ID:{sid} kwja:2.6.0"));
 
-            // 文节层 parent：边扫边覆盖（上游 _flat_lines 的语义）
+            // 文节层 parent：边扫边覆盖
             let mut ph_of_bp: Vec<usize> = Vec::new();
             for (pj, p) in ch.phrases.iter().enumerate() {
                 for _ in &p.bps {
@@ -1233,7 +1225,7 @@ fn shift_chunk(ch: &Chunk, shift: i64) -> Chunk {
     }
 }
 
-/// tokenizer.json 定位（HF snapshot 目录唯一）。
+/// tokenizer.json 定位（snapshot 目录唯一）。
 fn tokenizer_json(assets_dir: &Path) -> Result<std::path::PathBuf, String> {
     let snapshots = assets_dir
         .join("tokenizers")

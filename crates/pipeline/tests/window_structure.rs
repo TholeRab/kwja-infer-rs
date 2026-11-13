@@ -1,22 +1,21 @@
-//! 阶段 6 闸：stride=2 分窗结构与 Python **全等**（窗数＋每窗目标句下标）。
+//! stride=2 分窗结构测试：窗数与每窗目标句下标和 Python 参考实现全等。
 //!
-//! 基线由 `导出工具/导出Rust侧阶段6基准.py` 生成：输入＝阶段 5
-//! 已逐字节验证的 char 产出（即 word 阶段的真实输入），数据集超参取自 word
-//! 模块 checkpoint 保存的 datamodule.predict 配置（max_seq_length=256、
-//! document_split_stride=2、max_token_length=246）。
-//! 本测试读同一份基线，用本仓实现重算分窗结构并逐字节比对。
+//! 基线 fixtures 在 tests/fixtures/：输入是 char 阶段已逐字节验证的产出
+//! （即 word 阶段的真实输入），超参取 max_seq_length=256、
+//! document_split_stride=2、max_token_length=246。
+//! 本测试读基线，用本仓实现重算分窗结构并逐字节比对。
 //!
-//! doc_id 的前缀部分 Python 侧取时间戳（add_doc_ids_flat 默认），比对无意义，
-//! 两侧都只保留 `-s{stride}i{idx}` 后缀（单窗文档记作 DOC）。
+//! doc_id 前缀 Python 侧默认取时间戳，比对无意义，
+//! 两侧都只保留 -s{stride}i{idx} 后缀（单窗文档记作 DOC）。
 
 use std::path::PathBuf;
 
 use kwja_pipeline::word_stage::{parse_jumanpp_document, split_flat_word_document};
 use kwja_tokenizer::word_side::WordTokenizer;
 
-/// word 阶段配置里的 special_tokens（`configs/word_module.yaml:69`）：
-/// `additional_special_tokens` 是 8 个（含 `" "`，决定 tokenizer 怎么吃空格）；
-/// 数据集内部用的 `special_tokens` 滤掉 `" "` 剩 7 个。
+/// word 阶段配置里的 special_tokens：
+/// additional_special_tokens 是 8 个（含 " "，决定 tokenizer 怎么吃空格）；
+/// 数据集内部用的 special_tokens 滤掉 " " 剩 7 个。
 const ADDITIONAL_SPECIAL_TOKENS: [&str; 8] = [
     "[著者]",
     "[読者]",
@@ -148,7 +147,7 @@ fn assert_dump_equal(produced: &str, expected: &str, name: &str) {
 
 fn check(name: &str) {
     let fixture = std::fs::read_to_string(fixtures_dir().join(format!("word_windows_{name}.txt")))
-        .expect("阶段 6 基线缺失（先跑 阶段一/导出Rust侧阶段6基准.py）");
+        .expect("word 分窗基线缺失");
     // 头部元信息以 Python 侧为准，测试不做任何假设
     let mut max_token_length: Option<usize> = None;
     let mut stride: Option<i64> = None;
