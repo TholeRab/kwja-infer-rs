@@ -130,23 +130,33 @@ impl WordPredictor {
         // 非跳过窗的小数据（chunks/sids/ranges），下标 = 非跳过窗序号；
         // 后续窗的合并体视图要读「owner 窗」的这三样，所以全量驻留。
         let mut keeps: Vec<WinKeep> = Vec::with_capacity(windows.len());
-        let mut prep_ms = 0.0f64;
-        let mut dec_ms = 0.0f64;
-        let mut abs_ms = 0.0f64;
-        // ★双缓冲：编码与解码双缓冲流水。编码要 `&mut encoder`
-        //   （ORT session 独占、串行），解码/合并只要 `&self`（并行 CPU）——
-        //   两者可以重叠：第 N+1 段编码时，第 N 段在解码＋合并。
-        //   用 scoped thread 独占借用 encoder；prep 通道限 1 段，内存在界。
-        //   段 0 无可重叠（和原来一样串行），收益从段 1 开始；逐字节结果不变。
-        let pred: &WordPredictor = self; // 闭包里只用共享借用（&mut self 只为兼容旧签名）
+        // 三段耗时改用原子累计（C1 里三段在不同线程各自计时；单位微秒）
+        let prep_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let dec_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let abs_ms = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        // ★双缓冲：三级流水。编码（独占 encoder，串行 GPU）、
+        //   解码（&self，rayon 并行 CPU）、合并（&self，rayon 并行 CPU）
+        //   三阶段重叠：段 N 合并时，段 N+1 在解码，段 N+2 在编码。
+        //   scoped thread 各占一阶段，段引用与产物走有界通道（各限 1 段，
+        //   内存在界）；各段计算内容与串行版相同，逐字节结果不变。
+        //   理论墙钟下限＝max(三段总耗时)，收益上限即「被掩盖的两段」。
+        let pred: &WordPredictor = self; // 各线程只用共享借用（&mut self 只为兼容旧签名）
         std::thread::scope(|scope| -> Result<(), String> {
             let chunks: Vec<&[WordWindow]> = windows.chunks(SEGMENT).collect();
             let (req_tx, req_rx) = std::sync::mpsc::channel::<&[WordWindow]>();
-            let (prep_tx, prep_rx) =
-                std::sync::mpsc::sync_channel::<Result<Vec<Option<WindowPrep>>, String>>(1);
+            let (prep_tx, prep_rx) = std::sync::mpsc::sync_channel::<(
+                &[WordWindow],
+                Result<Vec<Option<WindowPrep>>, String>,
+            )>(1);
+            let (dec_tx, dec_rx) = std::sync::mpsc::sync_channel::<
+                Result<Vec<Option<(WinKeep, WinBig)>>, String>,
+            >(1);
             let encoder: &mut dyn Encoder = &mut *encoder;
+            let prep_ms = prep_ms.clone();
+            // 编码线程：独占 encoder（ORT session），逐段编码后连同段引用转交解码线程
             scope.spawn(move || {
                 for chunk in req_rx {
+                    let t = std::time::Instant::now();
                     let mut preps = Vec::with_capacity(chunk.len());
                     let mut err = None;
                     for window in chunk {
@@ -158,74 +168,98 @@ impl WordPredictor {
                             }
                         }
                     }
+                    prep_ms.fetch_add(
+                        t.elapsed().as_micros() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                     let had_err = err.is_some();
                     let payload = match err {
                         Some(e) => Err(e),
                         None => Ok(preps),
                     };
-                    if prep_tx.send(payload).is_err() {
+                    if prep_tx.send((chunk, payload)).is_err() || had_err {
                         break;
-                    }
-                    if had_err {
-                        break; // 出错即退，避免主线程已不再接收时卡死在 send
                     }
                 }
             });
-            for (i, _) in chunks.iter().enumerate() {
-                // 发本段请求：段 0 立即编码；段 i>0 的编码与上一段解码/合并重叠
-                if req_tx.send(chunks[i]).is_err() {
+            // 解码线程：13 头 ＋ 切分 ＋ NE ＋ 依存（窗间独立、`&self` 不写共享状态）
+            let dec_ms = dec_ms.clone();
+            scope.spawn(move || {
+                for (chunk, preps) in prep_rx {
+                    let t = std::time::Instant::now();
+                    let payload = match preps {
+                        Err(e) => Err(e),
+                        Ok(preps) => chunk
+                            .par_iter()
+                            .zip(preps)
+                            .map(|(window, prep)| match prep {
+                                Some(p) => pred.decode_window(window, p).map(Some),
+                                None => Ok(None),
+                            })
+                            .collect::<Result<Vec<_>, String>>(),
+                    };
+                    dec_ms.fetch_add(
+                        t.elapsed().as_micros() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                    let had_err = payload.is_err();
+                    if dec_tx.send(payload).is_err() || had_err {
+                        break;
+                    }
+                }
+            });
+            // 发全部段请求；有界通道自动背压（任一时刻至多各 1 段在途，内存有界）
+            for chunk in &chunks {
+                if req_tx.send(*chunk).is_err() {
                     break;
                 }
-                // 等本段编码完（段 i>0 的等待大部分已被上一段的解码/合并吃掉）
+            }
+            drop(req_tx); // 编码线程随之收尾
+            // 主线程＝合并阶段：段 N 合并与段 N+1 解码、段 N+2 编码重叠。
+            // owner/order 仍按段序登记（首窗定稿），落账按窗序，逐字节结果不变。
+            for _ in 0..chunks.len() {
+                let outs = dec_rx.recv().map_err(|_| "解码线程意外退出".to_string())??;
                 let t = std::time::Instant::now();
-                let preps = prep_rx.recv().map_err(|_| "编码线程意外退出".to_string())??;
-                prep_ms += t.elapsed().as_secs_f64() * 1000.0;
-                let chunk = chunks[i];
-
-                // 13 头 ＋ 切分 ＋ NE ＋ 依存（并行铺满核；窗间独立、`&self` 不写共享状态）
-                let t = std::time::Instant::now();
-            let outs: Vec<Option<(WinKeep, WinBig)>> = chunk
-                .par_iter()
-                .zip(preps)
-                .map(|(window, prep)| match prep {
-                    Some(p) => pred.decode_window(window, p).map(Some),
-                    None => Ok(None),
-                })
-                .collect::<Result<Vec<_>, String>>()?;
-            dec_ms += t.elapsed().as_secs_f64() * 1000.0;
-
-            // 合并（按窗并行；owner/order 先按窗序登记完，落账在 fold 里仍按窗序）
-            let t = std::time::Instant::now();
-            let mut jobs: Vec<(usize, &WinKeep, &WinBig)> = Vec::new();
-            for out in outs.iter().flatten() {
-                let (keep, big) = out;
-                let win = keeps.len();
-                register_owner(win, &keep.sids, &big.tgt_flags, &mut buf.owner, &mut buf.order);
-                keeps.push(WinKeep {
-                    chunks: keep.chunks.clone(),
-                    sids: keep.sids.clone(),
-                    ranges: keep.ranges.clone(),
-                });
-                jobs.push((win, keep, big));
+                let mut jobs: Vec<(usize, &WinKeep, &WinBig)> = Vec::new();
+                for out in outs.iter().flatten() {
+                    let (keep, big) = out;
+                    let win = keeps.len();
+                    register_owner(win, &keep.sids, &big.tgt_flags, &mut buf.owner, &mut buf.order);
+                    keeps.push(WinKeep {
+                        chunks: keep.chunks.clone(),
+                        sids: keep.sids.clone(),
+                        ranges: keep.ranges.clone(),
+                    });
+                    jobs.push((win, keep, big));
+                }
+                let absorbed: Vec<AbsorbedWin> = jobs
+                    .par_iter()
+                    .map(|(win, keep, big)| {
+                        absorb_one(*win, keep, big, &keeps, &buf.owner, &pred.tables)
+                    })
+                    .collect();
+                for a in absorbed {
+                    buf.fold(a);
+                }
+                abs_ms.fetch_add(
+                    t.elapsed().as_micros() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
             }
-            let absorbed: Vec<AbsorbedWin> = jobs
-                .par_iter()
-                .map(|(win, keep, big)| absorb_one(*win, keep, big, &keeps, &buf.owner, &pred.tables))
-                .collect();
-            for a in absorbed {
-                buf.fold(a);
-            }
-            abs_ms += t.elapsed().as_secs_f64() * 1000.0;
-            }
-            drop(req_tx); // 让编码线程退出，scope 随之收尾
             Ok(())
         })?;
 
         let t_render = std::time::Instant::now();
         let rendered = buf.render(&self.tables);
         if dbg {
+            let us = |a: &std::sync::atomic::AtomicU64| {
+                a.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0
+            };
             eprintln!(
-                "TIMING prep {prep_ms:.1} ms / decode {dec_ms:.1} ms / absorb {abs_ms:.1} ms / render {:.1} ms",
+                "TIMING prep {:.1} ms / decode {:.1} ms / absorb {:.1} ms / render {:.1} ms",
+                us(&prep_ms),
+                us(&dec_ms),
+                us(&abs_ms),
                 t_render.elapsed().as_secs_f64() * 1000.0
             );
         }
