@@ -111,7 +111,8 @@ fn wire_gpu_heads(predictor: &mut WordPredictor, has_cuda: bool) {
         return;
     }
     let models = repo_path("assets/models");
-    let use_cublas = std::env::var("KWJA_BACKEND").unwrap_or_default() == "cublas";
+    let backend_kind = std::env::var("KWJA_BACKEND").unwrap_or_default();
+    let use_cublas = backend_kind.is_empty() || backend_kind == "cublas";
     if use_cublas {
         match kwja_heads::cublas_heads::CublasHeads::load(&models) {
             Ok(Some(gpu)) => predictor

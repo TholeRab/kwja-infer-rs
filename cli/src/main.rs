@@ -72,11 +72,12 @@ fn run() -> anyhow::Result<()> {
     // ---- 两个阶段：char（RAW 到 Juman++ 文本）、word（13 头到 KNP 文本）----
     let char_stage = CharStage::new(char_vocab(&model_dir)?, 512).map_err(anyhow::Error::msg)?;
     let mut predictor = WordPredictor::new(&model_dir, 256, 2).map_err(anyhow::Error::msg)?;
-    // 头前向默认走 ORT 融合图（heads_fused.onnx + dep_type.onnx）；
-    // KWJA_BACKEND=cublas 时改 cuBLAS 直调（读 models/cublas/ 权重）。
+    // 头前向默认走 cuBLAS 直调（读 models/cublas/ 权重）——交付验证过的整书零差异配置；
+    // KWJA_BACKEND=ort 显式改回 ORT 融合图（heads_fused.onnx + dep_type.onnx）。
     // 权重缺失或走 CPU 时留 None，头前向回退 Rust CPU 路径，结果口径不变。
     if has_cuda {
-        let use_cublas = std::env::var("KWJA_BACKEND").unwrap_or_default() == "cublas";
+        let backend_kind = std::env::var("KWJA_BACKEND").unwrap_or_default();
+        let use_cublas = backend_kind.is_empty() || backend_kind == "cublas";
         if use_cublas {
             match kwja_heads::cublas_heads::CublasHeads::load(&models) {
                 Ok(Some(gpu)) => {
