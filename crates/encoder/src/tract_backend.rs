@@ -46,6 +46,17 @@ impl TractBackend {
         char_model: impl AsRef<Path>,
         word_model: impl AsRef<Path>,
     ) -> Result<Self, EncoderError> {
+        // ★窗内并行：让 tract 的 matmul 内核吃到 multithread-mm 线程池，
+        //   单次前向不再单线程。线程数可用 KWJA_TRACT_THREADS 覆盖，默认＝物理核数。
+        let threads = std::env::var("KWJA_TRACT_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or_else(|| {
+                std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+            });
+        tract_linalg::multithread::set_default_executor(
+            tract_linalg::multithread::Executor::multithread(threads),
+        );
         let char_path = char_model.as_ref().to_path_buf();
         let word_path = word_model.as_ref().to_path_buf();
         let mut word_cache = HashMap::new();

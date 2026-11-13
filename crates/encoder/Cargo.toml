@@ -9,5 +9,6 @@ ndarray.workspace = true
 thiserror.workspace = true
 libloading = "0.8"
 tract-onnx = "0.21"
+tract-linalg = { version = "0.21", features = ["multithread-mm"] }
 
 [dev-dependencies]
