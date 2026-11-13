@@ -19,6 +19,7 @@ pub mod norm_op;
 pub mod window;
 mod word_decode;
 mod word_encode;
+mod word_merge;
 
 pub mod word_predict;
 pub mod word_stage;
