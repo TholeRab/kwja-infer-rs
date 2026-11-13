@@ -133,6 +133,91 @@ impl GpuHeads {
         let logits = extract_rows(&outputs, "logits")?;
         Ok(logits.iter().map(|row| argmax(row)).collect())
     }
+
+    /// E3：多窗拼批——一次 ORT run 出 B 个窗的全部头输出。
+    /// 各窗行数不一时按批内最大值补零行：头的全部算子逐行独立，
+    /// 补零行只产生无人读的垃圾输出，真实行的值不因同批伙伴而变
+    /// （逐字节闸验证）。每窗取回时按自身行数切掉补零区。
+    pub fn forward_fused_batched(
+        &self,
+        windows: &[(&[Vec<f32>], &[Vec<f32>])],
+    ) -> Result<Vec<FusedHeadsOutput>, String> {
+        let batch = windows.len();
+        if batch == 0 {
+            return Ok(Vec::new());
+        }
+        let hid = windows[0].0.first().map(Vec::len).unwrap_or(0);
+        if hid == 0 {
+            return Err("行集宽度为 0".to_string());
+        }
+        let max_t = windows.iter().map(|w| w.0.len()).max().unwrap_or(0);
+        let max_m = windows.iter().map(|w| w.1.len()).max().unwrap_or(0);
+        let mut hidden = vec![0.0f32; batch * max_t * hid];
+        let mut pooled = vec![0.0f32; batch * max_m * hid];
+        for (k, (trows, prows)) in windows.iter().enumerate() {
+            for (i, row) in trows.iter().enumerate() {
+                if row.len() != hid {
+                    return Err(format!("窗 {k} token 行宽 {}/{} 不一", row.len(), hid));
+                }
+                let base = (k * max_t + i) * hid;
+                hidden[base..base + hid].copy_from_slice(row);
+            }
+            for (i, row) in prows.iter().enumerate() {
+                if row.len() != hid {
+                    return Err(format!("窗 {k} pooled 行宽 {}/{} 不一", row.len(), hid));
+                }
+                let base = (k * max_m + i) * hid;
+                pooled[base..base + hid].copy_from_slice(row);
+            }
+        }
+        let hidden = Array3::from_shape_vec((batch, max_t, hid), hidden)
+            .map_err(|e| format!("批量 hidden 整形失败：{e}"))?;
+        let pooled = Array3::from_shape_vec((batch, max_m, hid), pooled)
+            .map_err(|e| format!("批量 pooled 整形失败：{e}"))?;
+        let t_counts: Vec<usize> = windows.iter().map(|w| w.0.len()).collect();
+        let m_counts: Vec<usize> = windows.iter().map(|w| w.1.len()).collect();
+        let mut session = self.fused.lock().map_err(|_| "fused 会话锁中毒".to_string())?;
+        let outputs = session
+            .run(ort::inputs![
+                "hidden" => TensorRef::from_array_view(&hidden)
+                    .map_err(|e| format!("hidden 张量创建失败：{e}"))?,
+                "pooled" => TensorRef::from_array_view(&pooled)
+                    .map_err(|e| format!("pooled 张量创建失败：{e}"))?,
+            ])
+            .map_err(|e| format!("头融合前向失败：{e}"))?;
+        let reading = extract_reading_argmax_batched(&outputs, "reading_logits", &t_counts)?;
+        let pos = extract_rows_batched(&outputs, "pos_logits", &m_counts)?;
+        let subpos = extract_rows_batched(&outputs, "subpos_logits", &m_counts)?;
+        let conjtype = extract_rows_batched(&outputs, "conjtype_logits", &m_counts)?;
+        let conjform = extract_rows_batched(&outputs, "conjform_logits", &m_counts)?;
+        let wf = extract_rows_batched(&outputs, "wf_prob", &m_counts)?;
+        let bf = extract_rows_batched(&outputs, "bpf_prob", &m_counts)?;
+        let ne = extract_rows_batched(&outputs, "ne_logits", &m_counts)?;
+        let dep_hs = extract_rows_batched(&outputs, "dep_source", &m_counts)?;
+        let dep_ht = extract_rows_batched(&outputs, "dep_target", &m_counts)?;
+        let coh_source = extract_coh_batched(&outputs, "coh_source", &m_counts)?;
+        let coh_target = extract_coh_batched(&outputs, "coh_target", &m_counts)?;
+        let dis_hs = extract_rows_batched(&outputs, "dis_source", &m_counts)?;
+        let dis_ht = extract_rows_batched(&outputs, "dis_target", &m_counts)?;
+        Ok((0..batch)
+            .map(|k| FusedHeadsOutput {
+                reading_argmax: reading[k].clone(),
+                pos_logits: pos[k].clone(),
+                subpos_logits: subpos[k].clone(),
+                conjtype_logits: conjtype[k].clone(),
+                conjform_logits: conjform[k].clone(),
+                wf_prob: wf[k].clone(),
+                bpf_prob: bf[k].clone(),
+                ne_logits: ne[k].clone(),
+                dep_hs: dep_hs[k].clone(),
+                dep_ht: dep_ht[k].clone(),
+                coh_source: coh_source[k].clone(),
+                coh_target: coh_target[k].clone(),
+                dis_hs: dis_hs[k].clone(),
+                dis_ht: dis_ht[k].clone(),
+            })
+            .collect())
+    }
 }
 
 fn load_session(environment: &Environment, path: &Path) -> Result<Session, String> {
@@ -214,4 +299,102 @@ fn extract_flat(
         return Err(format!("{name} 形状应为 [1,M,rel,hid]，实际 {shape:?}"));
     }
     Ok(data.to_vec())
+}
+
+/// 取一个输出并摊平成 (形状, 数据)，供批量提取共用。
+fn fetch_output(
+    outputs: &ort::session::SessionOutputs<'_>,
+    name: &str,
+) -> Result<(Vec<usize>, Vec<f32>), String> {
+    let value = outputs.get(name).ok_or_else(|| format!("模型输出里没有 {name}"))?;
+    let (shape, data) = value
+        .try_extract_tensor::<f32>()
+        .map_err(|e| format!("输出 {name} 提取失败：{e}"))?;
+    let shape = &**shape;
+    Ok((shape.iter().map(|d| *d as usize).collect(), data.to_vec()))
+}
+
+/// (B, n, c) → 每窗前 counts[k] 行（补零行不取）。
+fn extract_rows_batched(
+    outputs: &ort::session::SessionOutputs<'_>,
+    name: &str,
+    counts: &[usize],
+) -> Result<Vec<Vec<Vec<f32>>>, String> {
+    let (shape, data) = fetch_output(outputs, name)?;
+    if shape.len() != 3 {
+        return Err(format!("{name} 形状应为 [B,n,c]，实际 {shape:?}"));
+    }
+    let (b, n, c) = (shape[0], shape[1], shape[2]);
+    if b != counts.len() || data.len() != b * n * c {
+        return Err(format!(
+            "{name} 形状 ({b},{n},{c}) 与批数 {}／数据量 {} 不符",
+            counts.len(),
+            data.len()
+        ));
+    }
+    Ok((0..b)
+        .map(|k| {
+            let base = k * n * c;
+            data[base..base + counts[k] * c]
+                .chunks_exact(c)
+                .map(<[f32]>::to_vec)
+                .collect()
+        })
+        .collect())
+}
+
+/// (B, T, c) reading → 每窗前 counts[k] 行的 argmax（首个最大）。
+fn extract_reading_argmax_batched(
+    outputs: &ort::session::SessionOutputs<'_>,
+    name: &str,
+    counts: &[usize],
+) -> Result<Vec<Vec<usize>>, String> {
+    let (shape, data) = fetch_output(outputs, name)?;
+    if shape.len() != 3 {
+        return Err(format!("{name} 形状应为 [B,T,c]，实际 {shape:?}"));
+    }
+    let (b, t, c) = (shape[0], shape[1], shape[2]);
+    if b != counts.len() || data.len() != b * t * c {
+        return Err(format!(
+            "{name} 形状 ({b},{t},{c}) 与批数 {}／数据量 {} 不符",
+            counts.len(),
+            data.len()
+        ));
+    }
+    Ok((0..b)
+        .map(|k| {
+            let base = k * t * c;
+            data[base..base + counts[k] * c]
+                .chunks_exact(c)
+                .map(|row| argmax(row))
+                .collect()
+        })
+        .collect())
+}
+
+/// (B, M, 9, 768) cohesion 投影 → 每窗平坦 (M_k*9*768)。
+fn extract_coh_batched(
+    outputs: &ort::session::SessionOutputs<'_>,
+    name: &str,
+    counts: &[usize],
+) -> Result<Vec<Vec<f32>>, String> {
+    let (shape, data) = fetch_output(outputs, name)?;
+    if shape.len() != 4 || shape[2] != 9 || shape[3] != 768 {
+        return Err(format!("{name} 形状应为 [B,M,9,768]，实际 {shape:?}"));
+    }
+    let (b, m) = (shape[0], shape[1]);
+    let per = 9 * 768;
+    if b != counts.len() || data.len() != b * m * per {
+        return Err(format!(
+            "{name} 形状 ({b},{m}) 与批数 {}／数据量 {} 不符",
+            counts.len(),
+            data.len()
+        ));
+    }
+    Ok((0..b)
+        .map(|k| {
+            let base = k * m * per;
+            data[base..base + counts[k] * per].to_vec()
+        })
+        .collect())
 }
