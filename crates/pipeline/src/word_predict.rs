@@ -116,55 +116,67 @@ impl WordPredictor {
 
         let dbg = std::env::var("KWJA_TIMING").is_ok();
 
-        // ---- 阶段一-A：编码（串行）----
-        // ★只有这里必须串行：`Encoder::run_word` 要 `&mut self`。
-        //   将来 GPU 侧把这一步换成 batch 前向，接口不变。
-        let t_prep = std::time::Instant::now();
-        let mut preps: Vec<Option<WindowPrep>> = Vec::with_capacity(windows.len());
-        for window in &windows {
-            preps.push(self.prep_window(encoder, window)?);
-        }
-        let prep_ms = t_prep.elapsed().as_secs_f64() * 1000.0;
+        // ---- 分段消化：每段 SEGMENT 个窗，段内「串行编码 → 并行解码 → 并行合并」----
+        // ★为什么必须分段：每窗解码产物带 cohesion/discourse 投影矩阵
+        //   （约 8–15 MB/窗），整书 4691 窗全部驻留就是几十 GB——
+        //   31.6 GB 的机器实测直接内存爆掉、系统换页卡死（ 整书闸）。
+        //   分段后峰值 ≈ 一段投影（64 × 15 MB ≈ 1 GB）＋ 全量小数据
+        //   （chunks/sids/ranges，约 0.2 MB/窗）＋ 账本本身。
+        // ★不改逐字节结果：owner/order 仍按窗序「首窗定稿」增量登记，
+        //   合并仍按窗序落账；各窗合并互不依赖（见 absorb_one 注），段边界
+        //   只是让投影早一点死，计算内容与全量版完全相同。
+        const SEGMENT: usize = 64;
+        let mut buf = Buffer::default();
+        // 非跳过窗的小数据（chunks/sids/ranges），下标 = 非跳过窗序号；
+        // 后续窗的合并体视图要读「owner 窗」的这三样，所以全量驻留。
+        let mut keeps: Vec<WinKeep> = Vec::with_capacity(windows.len());
+        let mut prep_ms = 0.0f64;
+        let mut dec_ms = 0.0f64;
+        let mut abs_ms = 0.0f64;
+        for chunk in windows.chunks(SEGMENT) {
+            // ★编码必须串行：`Encoder::run_word` 要 `&mut self`（ORT session 独占）。
+            let t = std::time::Instant::now();
+            let mut preps = Vec::with_capacity(chunk.len());
+            for window in chunk {
+                preps.push(self.prep_window(encoder, window)?);
+            }
+            prep_ms += t.elapsed().as_secs_f64() * 1000.0;
 
-        // ---- 阶段一-B：13 头 ＋ 切分 ＋ NE ＋ 依存（并行铺满核）----
-        // ★窗与窗之间完全独立、`&self` 不写共享状态，
-        //   任务数从「8 个头」变成「窗数 × 8」，不再受 12 线程限制。
-        let t_dec = std::time::Instant::now();
-        let outs: Vec<Option<WindowOut>> = windows
-            .par_iter()
-            .zip(preps)
-            .map(|(window, prep)| {
-                match prep {
+            // 13 头 ＋ 切分 ＋ NE ＋ 依存（并行铺满核；窗间独立、`&self` 不写共享状态）
+            let t = std::time::Instant::now();
+            let outs: Vec<Option<(WinKeep, WinBig)>> = chunk
+                .par_iter()
+                .zip(preps)
+                .map(|(window, prep)| match prep {
                     Some(p) => self.decode_window(window, p).map(Some),
                     None => Ok(None),
-                }
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let dec_ms = t_dec.elapsed().as_secs_f64() * 1000.0;
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            dec_ms += t.elapsed().as_secs_f64() * 1000.0;
 
-        // ---- 阶段二：合并（owner 预计算后按窗并行；落账仍在窗序里做）----
-        // ★owner/order 只由「各窗的目标句集合」这个前缀序列决定（非首窗的 end
-        //   恰好推进 stride 句 ⇒ 目标句集合按窗不重叠），可以事先算完；
-        //   合并体视图只依赖「本窗产物 ＋ owner ＋ 之前各窗的解码产物」，
-        //   各窗合并互不依赖 ⇒ 并行。三类行按窗序落账，键互不冲突，
-        //   结果与逐窗串行 absorb 逐字节一致。
-        let t_abs = std::time::Instant::now();
-        let (owner, order) = precompute_owner(&outs);
-        let live: Vec<&WindowOut> = outs.iter().flatten().collect();
-        let absorbed: Vec<AbsorbedWin> = live
-            .par_iter()
-            .enumerate()
-            .map(|(w, out)| absorb_one(w, out, &live, &owner, &self.tables))
-            .collect();
-        let mut buf = Buffer {
-            order,
-            owner,
-            ..Default::default()
-        };
-        for a in absorbed {
-            buf.fold(a);
+            // 合并（按窗并行；owner/order 先按窗序登记完，落账在 fold 里仍按窗序）
+            let t = std::time::Instant::now();
+            let mut jobs: Vec<(usize, &WinKeep, &WinBig)> = Vec::new();
+            for out in outs.iter().flatten() {
+                let (keep, big) = out;
+                let win = keeps.len();
+                register_owner(win, &keep.sids, &big.tgt_flags, &mut buf.owner, &mut buf.order);
+                keeps.push(WinKeep {
+                    chunks: keep.chunks.clone(),
+                    sids: keep.sids.clone(),
+                    ranges: keep.ranges.clone(),
+                });
+                jobs.push((win, keep, big));
+            }
+            let absorbed: Vec<AbsorbedWin> = jobs
+                .par_iter()
+                .map(|(win, keep, big)| absorb_one(*win, keep, big, &keeps, &buf.owner, &self.tables))
+                .collect();
+            for a in absorbed {
+                buf.fold(a);
+            }
+            abs_ms += t.elapsed().as_secs_f64() * 1000.0;
         }
-        let abs_ms = t_abs.elapsed().as_secs_f64() * 1000.0;
 
         let t_render = std::time::Instant::now();
         let rendered = buf.render(&self.tables);
@@ -233,7 +245,7 @@ impl WordPredictor {
         &self,
         window: &WordWindow,
         prep: WindowPrep,
-    ) -> Result<WindowOut, String> {
+    ) -> Result<(WinKeep, WinBig), String> {
         let WindowPrep { encoding, hidden } = prep;
         let surfs = window.surfs();
         let lemmas = window.lemmas();
@@ -501,29 +513,29 @@ impl WordPredictor {
         if dbg4 {
             eprintln!("      projections {:.1} ms", t_proj.elapsed().as_secs_f64() * 1000.0);
         }
-        Ok(WindowOut {
-            flat,
-            chunks,
-            sids,
-            ranges,
-            tgt_flags,
-            dep,
-            cohesion_proj: Some(cohesion_proj),
-            discourse_proj: Some(discourse_proj),
+        Ok((
+            WinKeep { chunks, sids, ranges },
+            WinBig {
+                flat,
+                tgt_flags,
+                dep,
+                cohesion_proj: Some(cohesion_proj),
+                discourse_proj: Some(discourse_proj),
             // ★cohesion 的 special 候选列不含 [ROOT]：Python 侧取
             //   get_morpheme_level_indices(only_cohesion=True)，把 [ROOT] 滤掉了
             //   （[ROOT] 是依存树的虚拟根，不参与指代消解）。多给一列会让 argmax
             //   落到一个本不该存在的候选上，整章 rel 全错。
-            cohesion_special_indices: self
-                .tables
-                .dataset_special_tokens()
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| **t != "[ROOT]")
-                .map(|(i, _)| n_morphemes + i)
-                .collect(),
-            sent_of_morpheme,
-        })
+                cohesion_special_indices: self
+                    .tables
+                    .dataset_special_tokens()
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| **t != "[ROOT]")
+                    .map(|(i, _)| n_morphemes + i)
+                    .collect(),
+                sent_of_morpheme,
+            },
+        ))
     }
 }
 
@@ -604,12 +616,17 @@ struct WindowPrep {
     hidden: ndarray::Array3<f32>,
 }
 
-/// 窗口处理产物（缓冲吸收后仅留渲染所需字段）。
-struct WindowOut {
-    flat: Vec<FlatMorpheme>,
+/// 解码产物·跨窗保留的小数据：后续窗的合并体视图要读 owner 窗的这三样。
+/// 全量驻留也只有约 0.2 MB/窗；大投影不在此列（随段释放，见 predict_text）。
+struct WinKeep {
     chunks: Vec<Chunk>,
     sids: Vec<String>,
     ranges: Vec<(usize, usize)>,
+}
+
+/// 解码产物·只在本窗合并期用的大件（投影矩阵约 8–15 MB/窗），段末即释放。
+struct WinBig {
+    flat: Vec<FlatMorpheme>,
     tgt_flags: Vec<bool>,
     dep: HashMap<String, (Vec<i32>, Vec<usize>)>,
     cohesion_proj: Option<RelationWiseProjection>,
@@ -655,41 +672,43 @@ struct AbsorbedWin {
     dep_rows: HashMap<String, (Vec<i32>, Vec<usize>)>,
 }
 
-/// owner/order 预计算（原串行 absorb 第 1/7 步的前缀化）：
-/// sid 的 owner ＝ 它首次作为目标句出现的窗（**非跳过窗**里的序号，
-/// 与渲染时的 `wins` 下标一致）。目标句集合按窗不重叠 ⇒ 逐窗扫一遍即得，
-/// 不依赖任何合并产物。
-fn precompute_owner(outs: &[Option<WindowOut>]) -> (HashMap<String, usize>, Vec<String>) {
-    let mut owner: HashMap<String, usize> = HashMap::new();
-    let mut order: Vec<String> = Vec::new();
-    for (win, out) in outs.iter().flatten().enumerate() {
-        for (si, sid) in out.sids.iter().enumerate() {
-            if out.tgt_flags[si] && !owner.contains_key(sid) {
-                order.push(sid.clone());
-                owner.insert(sid.clone(), win);
-            }
+/// owner/order 登记（原串行 absorb 第 1/7 步）：sid 的 owner ＝ 它首次作为
+/// 目标句出现的窗（**非跳过窗**里的序号，与渲染时的 `wins` 下标一致）。
+/// 按窗序逐窗调用即等价于原来的一次性预计算；目标句集合按窗不重叠，
+/// 首窗定稿语义不变。
+fn register_owner(
+    win: usize,
+    sids: &[String],
+    tgt_flags: &[bool],
+    owner: &mut HashMap<String, usize>,
+    order: &mut Vec<String>,
+) {
+    for (si, sid) in sids.iter().enumerate() {
+        if tgt_flags[si] && !owner.contains_key(sid) {
+            order.push(sid.clone());
+            owner.insert(sid.clone(), win);
         }
     }
-    (owner, order)
 }
 
 /// 单窗合并（原 `Buffer::absorb` 的第 2–6 步）。
 ///
-/// ★只读三样：本窗解码产物 `out`、预计算的 `owner`、之前各窗的解码产物
-///   `live`（合并体视图里缓冲句的 chunk 来源）。不碰任何累积账本 ⇒
+/// ★只读三样：本窗解码产物（`keep`＋`big`）、已登记的 `owner`、之前各窗的
+///   小数据 `live`（合并体视图里缓冲句的 chunk 来源）。不碰任何累积账本 ⇒
 ///   窗与窗可并行。产出的行按窗序 [`Buffer::fold`] 落账；目标键按窗不重叠，
 ///   落账顺序不影响结果。
 fn absorb_one(
     win: usize,
-    out: &WindowOut,
-    live: &[&WindowOut],
+    keep: &WinKeep,
+    big: &WinBig,
+    live: &[WinKeep],
     owner: &HashMap<String, usize>,
     tables: &WordTables,
 ) -> AbsorbedWin {
     // 2) 合并体视图：缓冲句用首次那窗的结构（坐标平移对齐），否则本窗的
     //（统一持有克隆，规避生长中的借用）
-    let mut views: Vec<(usize, Chunk)> = Vec::with_capacity(out.sids.len());
-    for (si, sid) in out.sids.iter().enumerate() {
+    let mut views: Vec<(usize, Chunk)> = Vec::with_capacity(keep.sids.len());
+    for (si, sid) in keep.sids.iter().enumerate() {
         if let Some(&ow) = owner.get(sid)
             && ow != win
         {
@@ -698,11 +717,11 @@ fn absorb_one(
                 .iter()
                 .position(|s| s == sid)
                 .expect("缓冲句不在原窗");
-            let shift = out.ranges[si].0 as i64 - live[ow].ranges[oi].0 as i64;
+            let shift = keep.ranges[si].0 as i64 - live[ow].ranges[oi].0 as i64;
             views.push((si, shift_chunk(&live[ow].chunks[oi], shift)));
             continue;
         }
-        views.push((si, out.chunks[si].clone()));
+        views.push((si, keep.chunks[si].clone()));
     }
 
     // 3) renumber：基本句扁平列表（句内序号、head、素性、win_ms0）
@@ -711,7 +730,7 @@ fn absorb_one(
         let si = *si;
         for (index, bp) in ch.phrases.iter().flat_map(|p| &p.bps).enumerate() {
             doc_bps.push(DocBp {
-                sid: out.sids[si].clone(),
+                sid: keep.sids[si].clone(),
                 index,
                 head_gidx: bp.head_gi,
                 head_text: bp.head_text.clone(),
@@ -722,11 +741,11 @@ fn absorb_one(
     }
 
     // 4) cohesion（目标 = 本窗目标句的基本句；候选 = 合并体全部基本句＋special）
-    let tgt_sids: HashSet<&str> = out
+    let tgt_sids: HashSet<&str> = keep
         .sids
         .iter()
         .enumerate()
-        .filter(|(si, _)| out.tgt_flags[*si])
+        .filter(|(si, _)| big.tgt_flags[*si])
         .map(|(_, s)| s.as_str())
         .collect();
     let targets: HashSet<(String, usize)> = doc_bps
@@ -737,7 +756,7 @@ fn absorb_one(
     // 本窗目标键此前不存在于账本（键按窗唯一），原先「先清再加」在落账侧做
     let mut rel_rows: HashMap<(String, usize), Vec<RelRow>> = HashMap::new();
     {
-        let cohesion_proj = out.cohesion_proj.as_ref().expect("cohesion 投影缺失");
+        let cohesion_proj = big.cohesion_proj.as_ref().expect("cohesion 投影缺失");
         let bp_head_gi: Vec<usize> = doc_bps.iter().map(|b| b.head_gidx).collect();
         let bp_index: Vec<usize> = doc_bps.iter().map(|b| b.index).collect();
         let bp_sid: Vec<String> = doc_bps.iter().map(|b| b.sid.clone()).collect();
@@ -750,7 +769,7 @@ fn absorb_one(
             bp_head_text: &bp_head_text,
             bp_feats: &bp_feats,
         };
-        let sent_of_morpheme = &out.sent_of_morpheme;
+        let sent_of_morpheme = &big.sent_of_morpheme;
         let rows = add_cohesion(
             &doc,
             &|gi: usize, cols: &[usize]| cohesion_proj.row_gathered(gi, cols),
@@ -758,7 +777,7 @@ fn absorb_one(
             &|t: &str| tables.cohesion_task2name(t),
             &|t: &str| tables.cohesion_task2rels(t),
             &|a: usize, c: usize| sent_of_morpheme[a] == sent_of_morpheme[c],
-            &out.cohesion_special_indices,
+            &big.cohesion_special_indices,
             &tables.dataset_special_tokens().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             &tables.exophora_referents,
             tables.restrict_cohesion_target,
@@ -775,7 +794,7 @@ fn absorb_one(
     // 5) discourse（节 = 带 節-区切 的基本句；行列 = 节首词素）
     let mut dis_rows: HashMap<(String, usize), String> = HashMap::new();
     {
-        let discourse_proj = out.discourse_proj.as_ref().expect("discourse 投影缺失");
+        let discourse_proj = big.discourse_proj.as_ref().expect("discourse 投影缺失");
         let cls: Vec<&DocBp> = doc_bps
             .iter()
             .filter(|b| b.feats.iter().any(|(k, _)| k.starts_with("節-区切")))
@@ -797,13 +816,13 @@ fn absorb_one(
     }
 
     // 6) 依存结果（键 = 目标句 sid，按窗唯一；「首窗定稿」语义在 fold 里保留）
-    let dep_rows: HashMap<String, (Vec<i32>, Vec<usize>)> = out.dep.clone();
+    let dep_rows: HashMap<String, (Vec<i32>, Vec<usize>)> = big.dep.clone();
 
     AbsorbedWin {
         win: StoredWin {
-            flat: out.flat.clone(),
-            chunks: out.chunks.clone(),
-            sids: out.sids.clone(),
+            flat: big.flat.clone(),
+            chunks: keep.chunks.clone(),
+            sids: keep.sids.clone(),
         },
         rel_rows,
         dis_rows,
