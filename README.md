@@ -35,3 +35,25 @@ cargo clippy --workspace --all-targets
   Windows 加载器对静态导入的搜索顺序是 exe 目录 → System32 → PATH，System32 永远压过 PATH。
 - CUDA 运行时依赖（cudart64_12、cudnn64_9、cublas64_12 等）不在 System32，需在 `PATH` 里加
   `../Python 环境/Lib/site-packages/torch/lib`；`onnxruntime_providers_cuda.dll` 与主 DLL 同目录，可被找到。
+
+## 发行打包
+
+```cmd
+tools\build-release.cmd -p kwja-infer     :: 只构建（绕开 C 盘目标目录与 TEMP 链接故障）
+tools\package-release.cmd                  :: 构建 + 出包（默认先构建）
+tools\package-release.cmd --skip-build     :: 只出包，用现有 target\release\kwja-infer.exe
+```
+
+**产物落点**：仓库**外**的 `../release/kwja-infer-<yyyymmdd>-<提交号>/`。
+
+| 为什么这么定 | 说明 |
+| --- | --- |
+| 不放 `target/` | 那是 cargo 的构建目录，`.gitignore` 已忽略，`cargo clean` 会整目录删掉；构建失败也会弄脏它。发行包放进去等于放在随时会被清掉的地方 |
+| 放仓库外 | 一个包 5.1 GB（exe ＋ assets），放仓内会被误提交、也会被 `git status` 一直挂着 |
+| 目录名带日期 | 只给提交号时交付方看不出哪个新。日期在前便于排序，提交号在后便于回溯代码 |
+
+**包内容**：`kwja-infer.exe` ＋ `assets/`（models/cuda/ort/dicts/tokenizers）＋ `说明.txt`。
+`说明.txt` 由 `tools/写发行说明.py` 从 `tools/发行说明-template.txt` 生成，写入本次的提交号与分支。
+
+**★不要用 PowerShell 写这份说明**：它按系统 ANSI（本机 cp936）读 UTF-8 模板，
+中文会被读坏再写坏（实测过一次，整份说明变成乱码）。必须显式 utf-8。

@@ -1,0 +1,24 @@
+kwja-infer 发行包（版本号见目录名）
+
+构建信息：版本号见目录名
+
+内容：
+  kwja-infer.exe      命令行推理程序
+  assets\models\      char/word 模型与 13 头权重（word_encoder7 为动态 batch 版）
+  assets\cuda\        CUDA 运行库（14 个 DLL）
+  assets\ort\         ONNX Runtime（load-dynamic 加载）
+  assets\dicts\       jumandic 词典
+  assets\tokenizers\  分词器
+
+用法：
+  kwja-infer.exe --device cuda --input <输入.txt> > 输出.knp
+  多章输入用 EOD 行分隔，与 Python 侧同一口径；KNP 结果打到 stdout。
+  --device 可选 auto（默认）｜cpu｜cuda；cuda 起不来直接报错，不静默回落。
+
+后端：
+  默认 cuBLAS 头 + batch=4（交付验证配置）。
+  KWJA_BACKEND=ort      头前向改走 ORT 融合图。
+  KWJA_BACKEND=candle   编码器走纯 Rust（配 --device cpu）。
+
+数据规模（交付时的已知情况）：
+  整书实测与 Python 参照逐字节相同。
