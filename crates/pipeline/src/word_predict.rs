@@ -46,8 +46,8 @@ pub struct WordPredictor {
     max_token_length: usize,
     stride: i64,
     crf: CrfParameters,
-    /// 头前向的 ORT CUDA 会话；模型文件缺失或 CPU 设备时为 None（走 CPU 路径）。
-    gpu_heads: Option<kwja_heads::gpu_heads::GpuHeads>,
+    /// 后端与头前向：头前向的 GPU 后端（ORT 融合图或 cuBLAS 直调）；权重缺失或 CPU 设备时为 None。
+    gpu_heads: Option<kwja_heads::gpu_backend::GpuHeadsBackend>,
 }
 
 impl WordPredictor {
@@ -95,8 +95,8 @@ impl WordPredictor {
         })
     }
 
-    /// 把 12 个头的前向切到 ORT CUDA（`GpuHeads::load` 返回 None 时保持 CPU 路径）。
-    pub fn set_gpu_heads(&mut self, gpu_heads: Option<kwja_heads::gpu_heads::GpuHeads>) {
+    /// 后端与头前向：把头前向切到 GPU 后端（ORT 融合图或 cuBLAS 直调）。
+    pub fn set_gpu_heads(&mut self, gpu_heads: Option<kwja_heads::gpu_backend::GpuHeadsBackend>) {
         self.gpu_heads = gpu_heads;
     }
 

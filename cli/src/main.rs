@@ -72,16 +72,29 @@ fn run() -> anyhow::Result<()> {
     // ---- 两个阶段：char（RAW → Juman++ 文本）→ word（13 头 → KNP 文本）----
     let char_stage = CharStage::new(char_vocab(&model_dir)?, 512).map_err(anyhow::Error::msg)?;
     let mut predictor = WordPredictor::new(&model_dir, 256, 2).map_err(anyhow::Error::msg)?;
-    // 12 个头的前向切 ORT CUDA（heads_fused.onnx / dep_type.onnx 存在且 CUDA 生效时）。
-    // 文件缺失或走 CPU 时留 None，头前向回退 Rust CPU 路径，结果口径不变。
+    // 后端与头前向：头前向切 GPU。默认 ORT 融合图（heads_fused.onnx + dep_type.onnx）；
+    // KWJA_BACKEND=cublas 切 cuBLAS 直调（models/cublas/ 权重，阶段一/导出cuBLAS权重.py）。
+    // 权重缺失或走 CPU 时留 None，头前向回退 Rust CPU 路径，结果口径不变。
     if has_cuda {
-        match kwja_heads::gpu_heads::GpuHeads::load(&models, device) {
-            Ok(Some(gpu)) => {
-                eprintln!("头前向：ORT CUDA（heads_fused.onnx + dep_type.onnx）");
-                predictor.set_gpu_heads(Some(gpu));
+        let use_cublas = std::env::var("KWJA_BACKEND").unwrap_or_default() == "cublas";
+        if use_cublas {
+            match kwja_heads::cublas_heads::CublasHeads::load(&models) {
+                Ok(Some(gpu)) => {
+                    eprintln!("头前向：cuBLAS 直调（E5，models/cublas 权重）");
+                    predictor.set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Cublas(gpu)));
+                }
+                Ok(None) => eprintln!("头前向：未找到 models/cublas 权重，留在 CPU"),
+                Err(e) => return Err(anyhow::anyhow!("加载 cuBLAS 权重失败：{e}")),
             }
-            Ok(None) => eprintln!("头前向：未找到 heads_fused.onnx / dep_type.onnx，留在 CPU"),
-            Err(e) => return Err(anyhow::anyhow!("加载头 ONNX 失败：{e}")),
+        } else {
+            match kwja_heads::gpu_heads::GpuHeads::load(&models, device) {
+                Ok(Some(gpu)) => {
+                    eprintln!("头前向：ORT CUDA（heads_fused.onnx + dep_type.onnx）");
+                    predictor.set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Ort(gpu)));
+                }
+                Ok(None) => eprintln!("头前向：未找到 heads_fused.onnx / dep_type.onnx，留在 CPU"),
+                Err(e) => return Err(anyhow::anyhow!("加载头 ONNX 失败：{e}")),
+            }
         }
     }
 
