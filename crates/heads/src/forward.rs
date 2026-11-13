@@ -14,6 +14,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use rayon::prelude::*;
+
 use crate::mask_tables::{CONJFORM_TAGS, CONJTYPE_TAGS, POS_TAGS, SUBPOS_TAGS};
 
 // ---------- safetensors 极简读取 ----------
@@ -144,23 +146,59 @@ impl Linear {
             assert_eq!(x.len(), self.in_features, "Linear 输入维度不符");
             a.extend_from_slice(x);
         }
-        let a = ndarray::Array2::from_shape_vec((rows, self.in_features), a)
-            .expect("输入整形失败");
-        // (rows, in) · (in, out) → (rows, out)
-        let mut y = a.dot(&self.weight_t);
-        // 加 bias（原地）
-        for mut row in y.rows_mut() {
+        // (rows, in) · (in, out)：按输出列分块撒 rayon，每线程在自己的连续
+        // 小缓冲里做 i-k-c 累加（A 行常驻缓存、权重列片只过一遍内存），算完
+        // 一次性写回。★不能直接对 y 的列块视图做——行距是 out，内层循环变成
+        // 跨步访问，比朴素 dot 还慢一个数量级。原先 `a.dot(&weight_t)` 每个
+        // 输出行都把整块权重重扫一遍：reading 头 768×12907×4B≈40MB × 几百行
+        // ≈ 每窗 10GB 级内存流量，是 decode 段的大头。乘加次序 k 升序不变，
+        // argmax 不受影响（阶段 4 argmax 闸与阶段 5/7 逐字节闸的改序先例）。
+        let out = self.out;
+        let inn = self.in_features;
+        let w_flat: &[f32] = self.weight_t.as_slice().expect("权重应连续");
+        let parallel = rows * out >= 1 << 20;
+        let block = out.div_ceil(rayon::current_num_threads().max(1)).max(1);
+        let ranges: Vec<(usize, usize)> = if parallel {
+            (0..out.div_ceil(block))
+                .map(|b| (b * block, ((b + 1) * block).min(out)))
+                .collect()
+        } else {
+            vec![(0, out)]
+        };
+        let bufs: Vec<Vec<f32>> = ranges
+            .par_iter()
+            .map(|&(c0, c1)| {
+                let bc = c1 - c0;
+                let mut ylocal = vec![0.0f32; rows * bc];
+                for i in 0..rows {
+                    let a_row = &a[i * inn..(i + 1) * inn];
+                    let y_row = &mut ylocal[i * bc..(i + 1) * bc];
+                    for k in 0..inn {
+                        let aik = a_row[k];
+                        let w_row = &w_flat[k * out + c0..k * out + c1];
+                        for (yv, wv) in y_row.iter_mut().zip(w_row.iter()) {
+                            *yv += aik * wv;
+                        }
+                    }
+                }
+                ylocal
+            })
+            .collect();
+        let mut y = vec![0.0f32; rows * out];
+        for (bi, &(c0, c1)) in ranges.iter().enumerate() {
+            let bc = c1 - c0;
+            for i in 0..rows {
+                y[i * out + c0..i * out + c1].copy_from_slice(&bufs[bi][i * bc..(i + 1) * bc]);
+            }
+        }
+        for row in y.chunks_exact_mut(out) {
             for (o, v) in row.iter_mut().enumerate() {
                 *v += self.bias[o];
             }
         }
-        y.rows()
-            .into_iter()
-            .map(|r| r.to_vec())
-            .collect()
+        y.chunks_exact(out).map(|r| r.to_vec()).collect()
     }
 }
-
 /// `SequenceLabelingHead`：Linear(hid→hid) → GELU → Linear(hid→labels)。
 #[derive(Debug, Clone)]
 pub struct SequenceHead {

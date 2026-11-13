@@ -32,7 +32,7 @@ use crate::knp_emit::{bp_header, feature_string, morpheme_line};
 use crate::morpheme_build::{
     build_morphemes, FeatureValue, FlatMorpheme, MorphemeBuildInput, OrderedFeats,
 };
-use crate::word_stage::{parse_jumanpp_document, split_flat_word_document, WordWindow};
+use crate::word_stage::{parse_jumanpp_documents_by_doc, split_flat_word_document, WordWindow};
 use crate::word_tables::WordTables;
 
 /// word 阶段推理器。编码器按调用传入（与 char_stage 同风格）。
@@ -98,21 +98,21 @@ impl WordPredictor {
         encoder: &mut dyn Encoder,
         juman_text: &str,
     ) -> Result<String, String> {
-        // ★doc_id 不能留空串：Python 侧分窗之前先跑 add_doc_ids_flat
-        //   （datasets/utils.py:24-30），把空 doc_id 补成 "<时间戳>-<序号>"；
-        //   分窗时 to_sub_doc_id 再把子文档拼成 "<前缀>-s{stride}i{idx}"。
-        //   留空串会生成 "-s21i0" 这类**匹配不上** SUB_DOC_PAT 的 id
-        //   （正则要求前缀至少一个非 '-' 字符），于是 target_sentence_flags
-        //   走「不匹配 ⇒ 全 True」分支——整窗 21 句全被当成目标句，
-        //   buffer 与 cohesion 的 targets 全错（实测第 1 章 rel 差 66 处）。
-        //   前缀取什么值不影响输出：输出前 strip_subdoc 会把它剥掉。
-        let document = parse_jumanpp_document(juman_text, "0");
-        let windows = split_flat_word_document(
-            &document,
-            self.max_token_length,
-            &self.tokenizer,
-            self.stride,
-        )?;
+        // ★必须按文档切分后再逐文档滑窗（parse_jumanpp_documents_by_doc，
+        //   上游 word_inference.py:41-44 的 chunk_by_document 口径）。以前这里
+        //   把整份输入当一个文档（doc_id="0"）滑窗，窗口序列与上游不一致
+        //   （整书 4357→4691 窗），每窗边界句的上下文全变——953 处词元差异
+        //   的根因。sid 取自注释行、跨文档唯一 ⇒ owner/order/账本无需按文档隔离。
+        let documents = parse_jumanpp_documents_by_doc(juman_text);
+        let mut windows: Vec<WordWindow> = Vec::new();
+        for document in &documents {
+            windows.extend(split_flat_word_document(
+                document,
+                self.max_token_length,
+                &self.tokenizer,
+                self.stride,
+            )?);
+        }
 
         let dbg = std::env::var("KWJA_TIMING").is_ok();
 
@@ -257,17 +257,78 @@ impl WordPredictor {
         Ok(rendered)
     }
 
-    /// 一个窗口：编码 → 前向 → 解码 → 组装。超长窗返回 `None`
-    ///（上游 warning 后 `continue`——本窗不产出任何内容）。
-    /// 串行预备：独占型后端（ORT session，&mut）逐窗分词＋编码。
+    /// 一段窗：分词 ＋ 编码器前向，**按批**跑（独占型后端：ORT session，&mut）。
+    ///
+    /// ★分词不碰后端，先逐窗做完；再把 batch 个窗拼成 [N, seq] 一次前向——
+    ///   `encode_window` 恒定补到 max_seq_length，长度一致才能拼。与 Python 侧
+    ///   同款 batch=4（环境变量 KWJA_BATCH 可覆盖）；attention mask 隔离批内
+    ///   他窗，argmax 结果与逐窗前向相同（分级闸 ch1/3ch 逐字节复核）。
+    ///   超长窗照 word_inference.py:118-121 跳过（不产出任何内容）。
     fn prep_windows_serial(
         &self,
         encoder: &mut dyn Encoder,
         windows: &[WordWindow],
     ) -> Result<Vec<Option<WindowPrep>>, String> {
-        let mut preps = Vec::with_capacity(windows.len());
+        let n_specials = self.tables.dataset_special_tokens().len();
+        let mut encodings: Vec<Option<WindowEncoding>> = Vec::with_capacity(windows.len());
         for window in windows {
-            preps.push(self.prep_window(encoder, window)?);
+            let encoding = self.tokenizer.encode_window(&window.surfs())?;
+            // 超长窗：word_inference.py:118-121 warning + continue
+            if encoding.num_tokens > self.max_seq_length - n_specials {
+                encodings.push(None);
+            } else {
+                encodings.push(Some(encoding));
+            }
+        }
+        let batch_size: usize = std::env::var("KWJA_BATCH")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&b| b > 0)
+            .unwrap_or(4);
+        let valid: Vec<usize> = (0..windows.len()).filter(|&i| encodings[i].is_some()).collect();
+        let mut hiddens: Vec<ndarray::Array3<f32>> = Vec::with_capacity(valid.len());
+        for group in valid.chunks(batch_size) {
+            let batch = group.len();
+            let mut input_ids = Vec::with_capacity(batch * self.max_seq_length);
+            let mut attention_mask = Vec::with_capacity(batch * self.max_seq_length);
+            let mut special_token_indices = Vec::with_capacity(batch * n_specials);
+            for &wi in group {
+                let enc = encodings[wi].as_ref().expect("valid 里都是已编码窗");
+                input_ids.extend_from_slice(&enc.input_ids);
+                attention_mask.extend_from_slice(&enc.attention_mask);
+                special_token_indices
+                    .extend((0..n_specials as i64).map(|i| enc.num_tokens as i64 + i));
+            }
+            let hidden = encoder
+                .run_word(&WordEncoderInput {
+                    input_ids,
+                    attention_mask,
+                    special_token_indices,
+                    batch,
+                    seq: self.max_seq_length,
+                })
+                .map_err(|e| e.to_string())?;
+            let shape = hidden.shape();
+            let (seq, hid) = (shape[1], shape[2]);
+            let flat = hidden.as_slice().expect("encoder 输出应连续").to_vec();
+            for k in 0..batch {
+                hiddens.push(ndarray::Array3::from_shape_vec(
+                    (1, seq, hid),
+                    flat[k * seq * hid..(k + 1) * seq * hid].to_vec()
+                )
+                .map_err(|e| format!("批输出切分失败：{e}"))?);
+            }
+        }
+        let mut hidden_iter = hiddens.into_iter();
+        let mut preps = Vec::with_capacity(windows.len());
+        for enc in encodings {
+            match enc {
+                Some(encoding) => {
+                    let hidden = hidden_iter.next().expect("hiddens 与有效窗等长");
+                    preps.push(Some(WindowPrep { encoding, hidden }));
+                }
+                None => preps.push(None)
+            }
         }
         Ok(preps)
     }
@@ -307,50 +368,6 @@ impl WordPredictor {
             .collect()
     }
 
-    #[allow(clippy::too_many_lines)]
-    /// 阶段一-A（串行）：分词 ＋ 编码器前向。
-    ///
-    /// ★只有这一段必须串行——`Encoder::run_word` 要 `&mut self`（ORT session 是独占的）。
-    ///   这也正好是 GPU 侧要批处理的那一段：将来把 N 个窗拼成 [N, seq] 一次前向，
-    ///   换的就是这个函数体，接口（输入 `&WordWindow`、输出 `WindowPrep`）不变。
-    fn prep_window(
-        &self,
-        encoder: &mut dyn Encoder,
-        window: &WordWindow,
-    ) -> Result<Option<WindowPrep>, String> {
-        let surfs = window.surfs();
-        let n_morphemes = surfs.len();
-        let dbg4 = std::env::var("KWJA_TIMING").is_ok();
-        let t_tok = std::time::Instant::now();
-        let encoding = self.tokenizer.encode_window(&surfs)?;
-        if dbg4 {
-            eprintln!("      tokenize {:.1} ms", t_tok.elapsed().as_secs_f64() * 1000.0);
-        }
-        let t_enc = std::time::Instant::now();
-        let n_specials = self.tables.dataset_special_tokens().len();
-        // 超长窗：word_inference.py:118-121 warning + continue
-        if encoding.num_tokens > self.max_seq_length - n_specials {
-            return Ok(None);
-        }
-
-        // ---- ONNX encoder → LAST_HIDDEN ----
-        let special_token_indices: Vec<i64> = (0..n_specials as i64)
-            .map(|i| encoding.num_tokens as i64 + i)
-            .collect();
-        let hidden = encoder
-            .run_word(&WordEncoderInput {
-                input_ids: encoding.input_ids.clone(),
-                attention_mask: encoding.attention_mask.clone(),
-                special_token_indices,
-                batch: 1,
-                seq: self.max_seq_length,
-            })
-            .map_err(|e| e.to_string())?;
-        if dbg4 {
-            eprintln!("      encoder {:.1} ms", t_enc.elapsed().as_secs_f64() * 1000.0);
-        }
-        Ok(Some(WindowPrep { encoding, hidden }))
-    }
 
     /// 阶段一-B（可并行）：13 头 ＋ 切分 ＋ NE ＋ 依存候选。
     ///

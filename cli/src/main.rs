@@ -28,7 +28,7 @@ struct Args {
     /// 执行设备：auto | cpu | cuda
     #[arg(long, default_value = "auto")]
     device: String,
-    /// 输入文本文件（UTF-8，一章一个文件；KNP 结果打印到 stdout）
+    /// 输入文本文件（UTF-8；多章时用 EOD 行分隔，与 Python 侧同一口径；KNP 结果打印到 stdout）
     #[arg(long)]
     input: PathBuf,
 }
@@ -75,11 +75,15 @@ fn run() -> anyhow::Result<()> {
 
     let raw = std::fs::read_to_string(&args.input)
         .with_context(|| format!("读取输入失败：{}", args.input.display()))?;
-    let normalized = normalize_text(&raw);
+    // ★按 EOD 切章再逐章归一化（flat_utils.chunk_by_document 同口径：strip 后
+    //   等于 "EOD" 的行分块）。Python 侧的写入口径是
+    //   `normalize_text(章文本) + "\nEOD\n"`——归一化落在章内，EOD 行不动，
+    //   所以这里也必须先切块、后归一化，不能整文件一起归一化。
+    let texts: Vec<String> = split_by_eod(&raw).iter().map(|t| normalize_text(t)).collect();
 
     let started = std::time::Instant::now();
     let jumanpp = char_stage
-        .run(std::slice::from_ref(&normalized), Some("c"), &mut backend)
+        .run(&texts, Some("c"), &mut backend)
         .map_err(anyhow::Error::msg)?;
     let knp = predictor
         .predict_text(&mut backend, &jumanpp)
@@ -127,6 +131,27 @@ fn char_vocab(model_dir: &Path) -> anyhow::Result<PathBuf> {
         bail!("char-wwm snapshots 不唯一：{hits:?}");
     }
     Ok(hits.remove(0).join("vocab.txt"))
+}
+
+/// 按 EOD 行切块（`flat_utils.chunk_by_document` 同口径：
+/// `line.strip() == "EOD"` 分块，块尾 rstrip；文件尾不足一块的也算一块）。
+fn split_by_eod(text: &str) -> Vec<String> {
+    let mut texts: Vec<String> = Vec::new();
+    let mut buff = String::new();
+    for line in text.split('\n') {
+        if line.trim() == "EOD" {
+            texts.push(buff.trim_end().to_string());
+            buff = String::new();
+        } else {
+            buff.push_str(line);
+            buff.push('\n');
+        }
+    }
+    let rest = buff.trim_end().to_string();
+    if !rest.is_empty() {
+        texts.push(rest);
+    }
+    texts
 }
 
 fn parse_device(s: &str) -> anyhow::Result<Device> {

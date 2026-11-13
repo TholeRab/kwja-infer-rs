@@ -78,6 +78,60 @@ pub fn parse_jumanpp_document(text: &str, doc_id: &str) -> WordDocument {
     }
 }
 
+/// rhoknp `Sentence.SID_PAT`（units/sentence.py:29）的 did 组：
+/// sid 去掉末尾的 `-<句号>`（"c-00-1" → "c-00"）。Python 侧
+/// `_SID_DID_PAT = ^(?P<sid>(?P<did>[a-zA-Z\d\-_]*?)-?\d*)$` 的等价算法：
+/// 先剥掉末尾的 ASCII 数字串，再剥掉一个 '-'。
+fn sid_did(sid: &str) -> &str {
+    let t = sid.trim_end_matches(|c: char| c.is_ascii_digit());
+    t.strip_suffix('-').unwrap_or(t)
+}
+
+/// Juman++ 文本 → 按 S-ID 文档前缀切分的多个扁平文档。
+///
+/// ★对照 Python `parse_jumanpp_documents_by_doc`（flat_word_document.py:47-86），
+///   即上游 word_inference.py:41-44 的 rhoknp `chunk_by_document` 同口径：
+///   **连续同 doc_id 的句归成一个文档**，doc_id 变化（或缺失）即开新文档。
+///    定案：word 阶段必须**按章切文档后再逐文档滑窗**——把整书并成
+///   1 个文档滑窗，窗口序列 4357→4691，每个目标句的预测上下文全变，
+///   953 处词元差异全部由此而来。
+pub fn parse_jumanpp_documents_by_doc(text: &str) -> Vec<WordDocument> {
+    let mut documents: Vec<WordDocument> = Vec::new();
+    let mut cur: Option<WordDocument> = None;
+    let mut prev_did: Option<String> = None;
+    for sent_text in jumanpp::split_sentences(text) {
+        let parsed = jumanpp::parse_sentence(&sent_text);
+        let did = if parsed.sid.is_empty() {
+            None
+        } else {
+            Some(sid_did(&parsed.sid).to_string())
+        };
+        let sentence = WordSentence {
+            sid: parsed.sid,
+            surfs: parsed.morphemes.iter().map(|m| m.surf.clone()).collect(),
+            lemmas: parsed.morphemes.iter().map(|m| m.lemma.clone()).collect(),
+        };
+        // 与 Python 逐句同构：cur 在手且（did 变了或 did 缺失）就收上一份
+        if cur.is_some() && (prev_did != did || did.is_none()) {
+            documents.push(cur.take().expect("cur 已判存在"));
+        }
+        if cur.is_none() {
+            cur = Some(WordDocument {
+                doc_id: did.clone().unwrap_or_default(),
+                sentences: Vec::new(),
+            });
+            prev_did = did;
+        }
+        cur.as_mut()
+            .expect("上一分支已保证 cur 在手")
+            .sentences
+            .push(sentence);
+    }
+    if let Some(doc) = cur.take() {
+        documents.push(doc);
+    }
+    documents
+}
 /// 按 token 数把文档切成子文档（`flat_word_document.split_flat_word_document`，
 /// 对照上游 datasets/base.py:90-108 ＋ word_inference.py 的 max_token_length）。
 ///
