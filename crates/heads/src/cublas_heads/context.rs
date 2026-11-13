@@ -31,13 +31,59 @@ pub(super) struct Handles {
     pub(super) minor: i32,
 }
 
-pub(super) fn init() -> Result<Handles, String> {
-    let torch_lib = std::env::var("KWJA_TORCH_LIB").unwrap_or_else(|_| {
-        "Python 环境/Lib/site-packages/torch/lib".to_string()
-    });
-    let cudart = load_lib(&format!("{torch_lib}/cudart64_12.dll"))?;
-    let cublas_dll = load_lib(&format!("{torch_lib}/cublas64_12.dll"))?;
-    let nvrtc = load_lib(&format!("{torch_lib}/nvrtc64_120_0.dll"))?;
+/// NVRTC 编译内核时要按**裸文件名**再加载 `nvrtc-builtins64_<ver>.dll`，
+/// 它不认 `LoadLibraryW` 的绝对路径所在目录，只认 exe 目录与系统目录。
+/// 所以这里先按绝对路径把它钉进进程（与 ORT 侧 `preload_cuda_dlls` 同一套路），
+/// 否则报 `failed to open nvrtc-builtins64_126.dll`。
+fn preload_nvrtc_builtins(dir: &std::path::Path) {
+    // 版本号随 nvrtc 走：120_0 对应 builtins 126（torch 2.x cu126 布局）。
+    // 用本 crate 已有的 load_lib（内部就是 LoadLibraryW），不引入新依赖；
+    // 句柄刻意不释放——进程常驻，让 nvrtc 之后按名解析能命中。
+    for name in [
+        "nvrtc-builtins64_126.dll",
+        "nvrtc-builtins64_120.dll",
+        "nvrtc-builtins64_11.dll",
+    ] {
+        let path = dir.join(name);
+        if path.is_file() && load_lib(&path.to_string_lossy()).is_ok() {
+            return;
+        }
+    }
+}
+
+/// 找 CUDA 运行库目录。优先级：
+/// 1. `KWJA_CUDA_DLL_DIR`（显式覆盖）
+/// 2. `<exe 目录>/assets/cuda`（发行包布局）
+/// 3. `<models_dir>/../cuda`（从 assets/models 推出 assets/cuda）
+pub(super) fn resolve_cuda_dir(models_dir: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("KWJA_CUDA_DLL_DIR") {
+        return p.into();
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join("assets").join("cuda");
+            if cand.is_dir() {
+                return cand;
+            }
+        }
+    }
+    models_dir.join("..").join("cuda")
+}
+
+pub(super) fn init(models_dir: &std::path::Path) -> Result<Handles, String> {
+    // ★不再硬编码开发机 venv 路径：那段 `Python 环境/...`
+    //   只在本机能用，发行包到别的机器必然失败。默认改为发行包自带的 assets/cuda。
+    let lib_dir = std::env::var("KWJA_TORCH_LIB")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| resolve_cuda_dir(models_dir));
+    let lib_dir_s = lib_dir.to_string_lossy().to_string();
+
+    // 先把 nvrtc-builtins 钉进进程，再载 nvrtc 本体。
+    preload_nvrtc_builtins(&lib_dir);
+
+    let cudart = load_lib(&format!("{lib_dir_s}/cudart64_12.dll"))?;
+    let cublas_dll = load_lib(&format!("{lib_dir_s}/cublas64_12.dll"))?;
+    let nvrtc = load_lib(&format!("{lib_dir_s}/nvrtc64_120_0.dll"))?;
     let drv = load_lib("nvcuda.dll")?;
 
     let malloc: FnMalloc = unsafe { std::mem::transmute(sym(cudart, "cudaMalloc")?) };

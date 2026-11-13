@@ -125,7 +125,7 @@ impl CublasHeads {
             ));
         }
 
-        let h = context::init()?;
+        let h = context::init(models_dir)?;
         let ks = context::compile(&h)?;
         let wmap = weights::upload(h.malloc, h.memcpy, &blob, &manifest)?;
 
