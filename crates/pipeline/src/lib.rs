@@ -17,6 +17,9 @@ pub mod knp_emit;
 pub mod morpheme_build;
 pub mod norm_op;
 pub mod window;
+mod word_decode;
+mod word_encode;
+
 pub mod word_predict;
 pub mod word_stage;
 pub mod word_tables;
