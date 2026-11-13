@@ -2,6 +2,7 @@
 //!
 //! 基线 fixtures 由真 word 模型加 CUDA 生成，输入是本仓 char 阶段的产出 fixture。
 //! 对齐口径：先单章一致，再整书一致。
+//! 头前向按 KWJA_BACKEND 接线（cuBLAS 直调或 ORT 融合图），与 cli 的运行配置一致。
 
 use std::path::PathBuf;
 
@@ -103,12 +104,39 @@ fn assert_bytes_equal(got: &str, expected: &str, what: &str) {
     );
 }
 
+/// 头前向接线与 cli 相同：KWJA_BACKEND=cublas 走 cuBLAS 直调，
+/// 其余走 ORT 融合图；仅 CUDA 生效时启用，权重缺失时留在 CPU。
+fn wire_gpu_heads(predictor: &mut WordPredictor, has_cuda: bool) {
+    if !has_cuda {
+        return;
+    }
+    let models = repo_path("assets/models");
+    let use_cublas = std::env::var("KWJA_BACKEND").unwrap_or_default() == "cublas";
+    if use_cublas {
+        match kwja_heads::cublas_heads::CublasHeads::load(&models) {
+            Ok(Some(gpu)) => predictor
+                .set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Cublas(gpu))),
+            Ok(None) => eprintln!("头前向：未找到 models/cublas 权重，留在 CPU"),
+            Err(e) => panic!("加载 cuBLAS 权重失败：{e}"),
+        }
+    } else {
+        match kwja_heads::gpu_heads::GpuHeads::load(&models, Device::Cuda) {
+            Ok(Some(gpu)) => predictor
+                .set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Ort(gpu))),
+            Ok(None) => eprintln!("头前向：未找到 heads_fused.onnx / dep_type.onnx，留在 CPU"),
+            Err(e) => panic!("加载头 ONNX 失败：{e}"),
+        }
+    }
+}
+
 fn run_case(char_fixture: &str, knp_fixture: &str, what: &str) {
     let char_text =
         std::fs::read_to_string(fixtures_dir().join(char_fixture)).expect("char fixture 缺失");
     let expected = std::fs::read_to_string(fixtures_dir().join(knp_fixture)).expect("KNP 基线缺失");
     let mut predictor = predictor();
     let mut encoder = backend();
+    let has_cuda = encoder.active_providers().iter().any(|p| p.contains("CUDA"));
+    wire_gpu_heads(&mut predictor, has_cuda);
     let got = predictor
         .predict_text(encoder.as_mut(), &char_text)
         .expect("word 阶段推理失败");
