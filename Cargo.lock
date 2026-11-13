@@ -768,7 +768,6 @@ dependencies = [
  "libm",
  "ndarray",
  "ort",
- "rayon",
  "serde_json",
 ]
 
