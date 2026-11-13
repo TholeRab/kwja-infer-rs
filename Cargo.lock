@@ -764,8 +764,10 @@ dependencies = [
 name = "kwja-heads"
 version = "0.1.0"
 dependencies = [
+ "kwja-encoder",
  "libm",
  "ndarray",
+ "ort",
  "rayon",
  "serde_json",
 ]
@@ -777,6 +779,7 @@ dependencies = [
  "anyhow",
  "clap",
  "kwja-encoder",
+ "kwja-heads",
  "kwja-normalize",
  "kwja-pipeline",
 ]

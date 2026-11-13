@@ -46,6 +46,8 @@ pub struct WordPredictor {
     max_token_length: usize,
     stride: i64,
     crf: CrfParameters,
+    /// 头前向的 ORT CUDA 会话；模型文件缺失或 CPU 设备时为 None（走 CPU 路径）。
+    gpu_heads: Option<kwja_heads::gpu_heads::GpuHeads>,
 }
 
 impl WordPredictor {
@@ -89,7 +91,13 @@ impl WordPredictor {
             max_token_length,
             stride,
             crf,
+            gpu_heads: None,
         })
+    }
+
+    /// 把 12 个头的前向切到 ORT CUDA（`GpuHeads::load` 返回 None 时保持 CPU 路径）。
+    pub fn set_gpu_heads(&mut self, gpu_heads: Option<kwja_heads::gpu_heads::GpuHeads>) {
+        self.gpu_heads = gpu_heads;
     }
 
     /// 一份 char 产出（Juman++ 文本）→ KNP 文本（对应一次 predict 批）。
@@ -405,10 +413,6 @@ impl WordPredictor {
         //   组内只算 logits/概率，argmax 与后续归并留在组外串行做——
         //   那些依赖前一步结果，并行没有意义。
         let h = &self.heads;
-        // ★九个头的耗时不均匀（reading 85 ms、bp_feature 109 ms、其余 6–20 ms），
-        //   二叉 join 会把大块和小块切到一起，rayon 只能按切分树并行，
-        //   实测 CPU 只用四成。改为扁平任务表交给 par_iter，由线程池自己调度。
-        //   ★必须是 IndexedParallelIterator（用 collect 到 Vec），顺序才有保证。
         const T_READING: usize = 0;
         const T_POS: usize = 1;
         const T_SUBPOS: usize = 2;
@@ -425,34 +429,80 @@ impl WordPredictor {
         //   NE 例外：它走全序列 Viterbi（掩码路径跨整窗），保持原样。
         let token_rows = &hidden_rows[..encoding.num_tokens];
         let morph_rows = &pooled[..n_morphemes];
-        let outs: Vec<Vec<Vec<f32>>> = (0..8usize)
-            .into_par_iter()
-            .map(|t| match t {
-                T_READING => h.reading.logits(token_rows),
-                T_POS => h.pos.logits(morph_rows),
-                T_SUBPOS => h.subpos.logits(morph_rows),
-                T_CONJTYPE => h.conjtype.logits(morph_rows),
-                T_CONJFORM => h.conjform.logits(morph_rows),
-                T_WF => h.word_feature.probabilities(morph_rows),
-                T_NE => h.ne.logits(&pooled),
-                T_BF => h.base_phrase_feature.probabilities(morph_rows),
-                _ => unreachable!(),
-            })
-            .collect();
-        let reading_logits = &outs[T_READING];
-        let wf_prob = &outs[T_WF];
-        let ne_logits = &outs[T_NE];
-        let bf_prob = &outs[T_BF];
-        let attrs = get_morpheme_attribute_predictions(
-            &outs[T_POS][..n_morphemes],
-            &outs[T_SUBPOS][..n_morphemes],
-            &outs[T_CONJTYPE][..n_morphemes],
-            &outs[T_CONJFORM][..n_morphemes],
-        );
+        // 12 个头的重前向整体切 GPU——一张融合图出全部 logits/概率与 pairwise
+        // 投影。行集口径与 CPU 路径一致：reading 吃 token 级，其余头吃含 special 区
+        // 的全量 pooled（依存与 cohesion 的候选列要取 [ROOT] 等特殊词位），词素级
+        // 输出由下游再切 [..n_morphemes]。
+        let gpu_out: Option<kwja_heads::gpu_heads::FusedHeadsOutput> =
+            match self.gpu_heads.as_ref() {
+                Some(g) => {
+                    // ★pooled 只送「真词素＋special 区」——其后的填充行没有任何
+                    //   消费者（依存/cohesion/discourse 的行列下标全都 < 这里），
+                    //   GPU 的投影与 reading 计算量随行数走，不送白算的填充行。
+                    let usable = n_morphemes + self.tables.dataset_special_tokens().len();
+                    Some(g.forward_fused(token_rows, &pooled[..usable])?)
+                }
+                None => None,
+            };
+        let (reading_argmax, wf_prob, ne_logits, bf_prob, attrs) = match &gpu_out {
+            Some(o) => {
+                let attrs = get_morpheme_attribute_predictions(
+                    &o.pos_logits[..n_morphemes],
+                    &o.subpos_logits[..n_morphemes],
+                    &o.conjtype_logits[..n_morphemes],
+                    &o.conjform_logits[..n_morphemes],
+                );
+                (
+                    o.reading_argmax.clone(),
+                    o.wf_prob.clone(),
+                    o.ne_logits.clone(),
+                    o.bpf_prob.clone(),
+                    attrs,
+                )
+            }
+            None => {
+                // ★九个头的耗时不均匀（reading 85 ms、bp_feature 109 ms、其余 6–20 ms），
+                //   二叉 join 会把大块和小块切到一起，rayon 只能按切分树并行，
+                //   实测 CPU 只用四成。改为扁平任务表交给 par_iter，由线程池自己调度。
+                //   ★必须是 IndexedParallelIterator（用 collect 到 Vec），顺序才有保证。
+                //   组内只算 logits/概率，argmax 与后续归并留在组外串行做——
+                //   那些依赖前一步结果，并行没有意义。
+                let outs: Vec<Vec<Vec<f32>>> = (0..8usize)
+                    .into_par_iter()
+                    .map(|t| match t {
+                        T_READING => h.reading.logits(token_rows),
+                        T_POS => h.pos.logits(morph_rows),
+                        T_SUBPOS => h.subpos.logits(morph_rows),
+                        T_CONJTYPE => h.conjtype.logits(morph_rows),
+                        T_CONJFORM => h.conjform.logits(morph_rows),
+                        T_WF => h.word_feature.probabilities(morph_rows),
+                        T_NE => h.ne.logits(&pooled),
+                        T_BF => h.base_phrase_feature.probabilities(morph_rows),
+                        _ => unreachable!(),
+                    })
+                    .collect();
+                let attrs = get_morpheme_attribute_predictions(
+                    &outs[T_POS][..n_morphemes],
+                    &outs[T_SUBPOS][..n_morphemes],
+                    &outs[T_CONJTYPE][..n_morphemes],
+                    &outs[T_CONJFORM][..n_morphemes],
+                );
+                (
+                    outs[T_READING]
+                        .iter()
+                        .map(|row| argmax(row))
+                        .collect::<Vec<usize>>(),
+                    outs[T_WF].clone(),
+                    outs[T_NE].clone(),
+                    outs[T_BF].clone(),
+                    attrs,
+                )
+            }
+        };
 
-        let reading_names: Vec<&str> = reading_logits
+        let reading_names: Vec<&str> = reading_argmax
             .iter()
-            .map(|row| self.tables.id2reading[argmax(row)].as_str())
+            .map(|&ai| self.tables.id2reading[ai].as_str())
             .collect();
         let tokens: Vec<String> = encoding
             .input_ids
@@ -589,7 +639,33 @@ impl WordPredictor {
             .position(|t| *t == "[ROOT]")
             .expect("special_tokens 里没有 [ROOT]");
         let root_gi = n_morphemes + root_offset;
-        let dep_proj = self.heads.dependency.project(&pooled);
+        let t_proj = std::time::Instant::now();
+        // 三组投影一次装配，GPU 输出**移动**进来——原先逐字段 clone，
+        // 每窗白拷约 20MB 的投影矩阵。
+        let (dep_proj, cohesion_proj, discourse_proj) = match gpu_out {
+            Some(o) => (
+                kwja_heads::forward::SelectionProjection::from_projected(
+                    &self.heads.dependency,
+                    o.dep_hs,
+                    o.dep_ht,
+                ),
+                kwja_heads::forward::RelationWiseProjection::from_projected(
+                    &self.heads.cohesion,
+                    o.coh_source,
+                    o.coh_target,
+                ),
+                kwja_heads::forward::SelectionProjection::from_projected(
+                    &self.heads.discourse,
+                    o.dis_hs,
+                    o.dis_ht,
+                ),
+            ),
+            None => (
+                self.heads.dependency.project(&pooled),
+                self.heads.cohesion.project(&pooled),
+                self.heads.discourse.project(&pooled),
+            ),
+        };
         let mut dep: HashMap<String, (Vec<i32>, Vec<usize>)> = HashMap::new();
         for (si, tgt) in tgt_flags.iter().enumerate() {
             if !tgt {
@@ -603,27 +679,66 @@ impl WordPredictor {
             let mask = dependency_mask(&ranges, si, root_gi, self.max_seq_length);
             // ★行与行独立，并行算（dependency 单窗 70–800 ms，是这里最大的一块）。
             //   par_iter 保序，dep_preds 的下标与串行一致。
-            let rows: Vec<(usize, Vec<DepCandidate>)> = head_gis
-                .par_iter()
-                .map(|&hg| {
-                    let row = dep_proj.row(hg);
-                    let mut masked: Vec<f32> = Vec::with_capacity(self.max_seq_length);
-                    let row_mask =
-                        &mask[hg * self.max_seq_length..(hg + 1) * self.max_seq_length];
-                    for (j, &ok) in row_mask.iter().enumerate() {
-                        masked.push(if ok { row[j][0] } else { kwja_heads::mask_tables::MASKED });
-                    }
-                    let mut cands = Vec::new();
-                    for parent_gi in topk_indices(&masked, self.tables.dependency_topk) {
-                        let dtype = self
-                            .heads
-                            .dependency_type
-                            .predict_pair(&pooled[hg], &pooled[parent_gi]);
-                        cands.push(DepCandidate { parent_gi, dep_type_idx: dtype });
-                    }
-                    (hg, cands)
-                })
-                .collect();
+            //   topk 前的行 logits 仍是 CPU 小点积；topk 出的全部 (主辞,候选) 对
+            //   攒成 (P,1536) 一次过 GPU（dep_type.onnx），argmax 语义不变。
+            let rows: Vec<(usize, Vec<DepCandidate>)> = match self.gpu_heads.as_ref() {
+                Some(g) => {
+                    let topks: Vec<(usize, Vec<usize>)> = head_gis
+                        .par_iter()
+                        .map(|&hg| {
+                            (
+                                hg,
+                                dependency_topk_masked(
+                                    &dep_proj,
+                                    hg,
+                                    &mask,
+                                    self.max_seq_length,
+                                    self.tables.dependency_topk,
+                                ),
+                            )
+                        })
+                        .collect();
+                    let pairs: Vec<(usize, usize)> = topks
+                        .iter()
+                        .flat_map(|(hg, ps)| ps.iter().map(move |&p| (*hg, p)))
+                        .collect();
+                    let dtypes = g.dep_type_argmax(&pairs, &pooled)?;
+                    let mut it = dtypes.into_iter();
+                    topks
+                        .into_iter()
+                        .map(|(hg, ps)| {
+                            let cands = ps
+                                .into_iter()
+                                .map(|parent_gi| DepCandidate {
+                                    parent_gi,
+                                    dep_type_idx: it.next().expect("dep_type 输出数应与对数一致"),
+                                })
+                                .collect();
+                            (hg, cands)
+                        })
+                        .collect()
+                }
+                None => head_gis
+                    .par_iter()
+                    .map(|&hg| {
+                        let mut cands = Vec::new();
+                        for parent_gi in dependency_topk_masked(
+                            &dep_proj,
+                            hg,
+                            &mask,
+                            self.max_seq_length,
+                            self.tables.dependency_topk,
+                        ) {
+                            let dtype = self
+                                .heads
+                                .dependency_type
+                                .predict_pair(&pooled[hg], &pooled[parent_gi]);
+                            cands.push(DepCandidate { parent_gi, dep_type_idx: dtype });
+                        }
+                        (hg, cands)
+                    })
+                    .collect(),
+            };
             for (hg, cands) in rows {
                 dep_preds[hg] = cands;
             }
@@ -640,10 +755,7 @@ impl WordPredictor {
         if dbg4 {
             eprintln!("      dependency {:.1} ms", t_dep.elapsed().as_secs_f64() * 1000.0);
         }
-        let t_proj = std::time::Instant::now();
-        // ---- cohesion / discourse 的投影（解码在缓冲合并体上做）----
-        let cohesion_proj = self.heads.cohesion.project(&pooled);
-        let discourse_proj = self.heads.discourse.project(&pooled);
+        // ---- cohesion / discourse 的投影（已在上面与 dep_proj 一并装配）----
 
         // 词素 → 句序（cohesion 同句判据）
         let mut sent_of_morpheme = vec![0usize; self.max_seq_length];
@@ -720,6 +832,31 @@ fn dependency_mask(ranges: &[(usize, usize)], si: usize, root_gi: usize, seq: us
         mask[i * seq + root_gi] = true;
     }
     mask
+}
+
+/// 依存一行的 topk 候选：只对掩码放行的列算 logits（[`kwja_heads::forward::SelectionProjection::row_gathered`]
+/// 与整行逐元素相同），掩掉的列保持 MASKED。掩码只放开**同句词素＋[ROOT]**，
+/// 比算满整窗 246 列少一个数量级的 gelu，而 topk 结果与「算完整行再掩」一致。
+fn dependency_topk_masked(
+    dep_proj: &kwja_heads::forward::SelectionProjection,
+    hg: usize,
+    mask: &[bool],
+    max_seq_length: usize,
+    topk: usize,
+) -> Vec<usize> {
+    let row_mask = &mask[hg * max_seq_length..(hg + 1) * max_seq_length];
+    let cols: Vec<usize> = row_mask
+        .iter()
+        .enumerate()
+        .filter(|&(_, ok)| *ok)
+        .map(|(j, _)| j)
+        .collect();
+    let vals = dep_proj.row_gathered(hg, &cols);
+    let mut masked = vec![kwja_heads::mask_tables::MASKED; max_seq_length];
+    for (j, v) in cols.iter().zip(vals) {
+        masked[*j] = v[0];
+    }
+    topk_indices(&masked, topk)
 }
 
 /// torch.topk 的等价物：降序取 k 个下标；并列时取先出现者。
@@ -911,8 +1048,15 @@ fn absorb_one(
             bp_feats: &bp_feats,
         };
         let sent_of_morpheme = &big.sent_of_morpheme;
+        // ★只给「目标句的基本句」算 cohesion 行——合并体里其余基本句的行
+        //   在落账侧本来就被 targets 过滤丢弃，先不算才是纯省计算，结果不变。
+        let wanted: Vec<bool> = doc_bps
+            .iter()
+            .map(|b| targets.contains(&(b.sid.clone(), b.index)))
+            .collect();
         let rows = add_cohesion(
             &doc,
+            &wanted,
             &|gi: usize, cols: &[usize]| cohesion_proj.row_gathered(gi, cols),
             &tables.cohesion_tasks,
             &|t: &str| tables.cohesion_task2name(t),

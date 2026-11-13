@@ -72,6 +72,18 @@ fn run() -> anyhow::Result<()> {
     // ---- 两个阶段：char（RAW → Juman++ 文本）→ word（13 头 → KNP 文本）----
     let char_stage = CharStage::new(char_vocab(&model_dir)?, 512).map_err(anyhow::Error::msg)?;
     let mut predictor = WordPredictor::new(&model_dir, 256, 2).map_err(anyhow::Error::msg)?;
+    // 12 个头的前向切 ORT CUDA（heads_fused.onnx / dep_type.onnx 存在且 CUDA 生效时）。
+    // 文件缺失或走 CPU 时留 None，头前向回退 Rust CPU 路径，结果口径不变。
+    if has_cuda {
+        match kwja_heads::gpu_heads::GpuHeads::load(&models, device) {
+            Ok(Some(gpu)) => {
+                eprintln!("头前向：ORT CUDA（heads_fused.onnx + dep_type.onnx）");
+                predictor.set_gpu_heads(Some(gpu));
+            }
+            Ok(None) => eprintln!("头前向：未找到 heads_fused.onnx / dep_type.onnx，留在 CPU"),
+            Err(e) => return Err(anyhow::anyhow!("加载头 ONNX 失败：{e}")),
+        }
+    }
 
     let raw = std::fs::read_to_string(&args.input)
         .with_context(|| format!("读取输入失败：{}", args.input.display()))?;

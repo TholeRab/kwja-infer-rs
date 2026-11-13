@@ -411,6 +411,22 @@ impl SelectionProjection {
             })
             .collect()
     }
+
+    /// E1 GPU 路径：source/target 两个线性层的结果由 ORT 算好送来，这里只装配。
+    pub fn from_projected(head: &SelectionHead, hs: Vec<Vec<f32>>, ht: Vec<Vec<f32>>) -> Self {
+        let weight_t = ndarray::Array2::from_shape_vec((head.labels, head.hid), head.output_weight.clone())
+            .expect("输出层权重整形失败")
+            .t()
+            .to_owned();
+        Self {
+            hs,
+            ht,
+            output_weight: head.output_weight.clone(),
+            weight_t,
+            labels: head.labels,
+            hid: head.hid,
+        }
+    }
 }
 
 /// `WordSelectionHead`：l_source／l_target 两个线性层 ＋ 无 bias 的输出层。
@@ -530,6 +546,17 @@ impl RelationWiseProjection {
             out.push(self.row_gathered(i, cols));
         }
         out
+    }
+
+    /// E1 GPU 路径：source/target（delta 已并入、rel 主序平坦缓冲）由 ORT 算好送来。
+    pub fn from_projected(head: &LoraRelationWiseHead, source: Vec<f32>, target: Vec<f32>) -> Self {
+        Self {
+            source,
+            target,
+            classifier: head.classifier.clone(),
+            rels: head.rels,
+            hid: head.hid,
+        }
     }
 }
 /// `LoRARelationWiseWordSelectionHead`（head.py:152-190）。

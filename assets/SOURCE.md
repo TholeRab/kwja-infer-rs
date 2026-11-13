@@ -26,8 +26,10 @@
 | `char_dynamic.onnx` | 404.3 MB | KWJA char 模块导出，batch 固定 1、seq 动态 |
 | `word_encoder7.onnx` | 0.1 MB | KWJA word encoder 图（batch/seq 均动态） |
 | `word_encoder7.onnx.data` | 426.5 MB | 上者的外部权重 |
+| `heads_fused.onnx` | 75.4 MB | word 12 头融合图（`导出Rust侧13头ONNX.py` 导出；opset 17、batch/token_seq/morph_seq 动态；ORT-CPU 对 torch 自检通过） |
+| `dep_type.onnx` | 9.5 MB | 依存类型头（同上脚本；输入 (P,1536) 批量动态） |
 
-**★只拷了实际用到的 3 个文件。** 原目录里另有 `_opt.onnx`、`char_full.onnx`、
+**★只拷了实际用到的 5 个文件。** 原目录里另有 `_opt.onnx`、`char_full.onnx`、
 `word_encoder.onnx`、`word_static256.onnx` 等实验产物（约 1.5 GB），**未拷**。
 
 ## ort/

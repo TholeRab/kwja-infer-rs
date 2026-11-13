@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 kwja-encoder = { path = "../crates/encoder" }
+kwja-heads = { path = "../crates/heads" }
 kwja-normalize = { path = "../crates/normalize" }
 kwja-pipeline = { path = "../crates/pipeline" }
 clap.workspace = true

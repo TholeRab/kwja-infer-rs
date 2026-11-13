@@ -5,3 +5,4 @@ pub mod session;
 
 pub use cuda_ep::Device;
 pub use session::OrtBackend;
+pub use session::global_environment;

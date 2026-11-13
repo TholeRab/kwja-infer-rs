@@ -57,6 +57,8 @@ pub type CohesionRowFn<'a> = &'a (dyn Fn(usize, &[usize]) -> Vec<Vec<f32>> + Syn
 #[allow(clippy::too_many_arguments)]
 pub fn add_cohesion(
     doc: &CohesionDoc<'_>,
+    // 只对 true 的基本句行打分（落账侧只留目标句的行，其余行本是白算）。
+    wanted: &[bool],
     row_logits: CohesionRowFn<'_>,
     cohesion_tasks: &[String],
     task2name: &dyn Fn(&str) -> &str,
@@ -110,8 +112,9 @@ pub fn add_cohesion(
     //   且同句）∪ special 列；共指任务更严的那部分列照常在阶段二掩掉。
     //
     //   ★顺序不变：par_iter().map().collect() 保序，列仍按 gather 序排列。
-    let all_rows: Vec<(Vec<usize>, Vec<Vec<f32>>)> = (0..b)
+    let all_rows: Vec<(usize, (Vec<usize>, Vec<Vec<f32>>))> = (0..b)
         .into_par_iter()
+        .filter(|&bi| wanted[bi])
         .map(|bi| {
             let anaph = doc.bp_head_gi[bi];
             let mut ks: Vec<usize> = Vec::with_capacity(gather.len());
@@ -127,14 +130,14 @@ pub fn add_cohesion(
                     cols.push(cand);
                 }
             }
-            (ks, row_logits(anaph, &cols))
+            (bi, (ks, row_logits(anaph, &cols)))
         })
         .collect();
 
     // ★阶段二：串行解码（掩码 + argmax）。
     //   argmax 平局取首个，顺序是语义的一部分，这里必须串行。
     let mut out = Vec::new();
-    for (bi, (ks, rows)) in all_rows.into_iter().enumerate() {
+    for (bi, (ks, rows)) in all_rows.into_iter() {
         let head_gi = doc.bp_head_gi[bi];
         let feats = &doc.bp_feats[bi];
         for (task, rel, channel) in &rel_channels {

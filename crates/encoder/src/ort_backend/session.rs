@@ -119,7 +119,8 @@ fn preload_cuda_dlls() {
     }
 }
 
-fn global_environment(device: Device) -> Result<&'static Environment, EncoderError> {
+/// 进程级 ORT Environment（ORT 硬限制每进程一个）；char/word 与 E1 头会话共用。
+pub fn global_environment(device: Device) -> Result<&'static Environment, EncoderError> {
     let built = ENVIRONMENT.get_or_init(|| {
         preload_cuda_dlls();
         let builder = ort::init_from(ort_dll_path())
