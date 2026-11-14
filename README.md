@@ -2,8 +2,8 @@
 
 KWJA 的推理侧实现。输入日文原文本，输出 KNP 格式的形态论与依存分析结果。
 
-字符阶段与词阶段的神经网络前向走 ONNX Runtime（CUDA），13 个输出头默认走 cuBLAS 直调；
-分词用 tokenizers crate，整个流程编译成一个独立 exe，运行时不依赖 Python。
+整个流程编译成一个独立 exe，运行时不依赖 Python。编码器由 ONNX Runtime 在 CUDA 上执行，
+13 个输出头默认走 cuBLAS 直调；分词用 tokenizers crate。各层的实现与设备见「前向的实现」。
 
 产出与参考实现绝大多数情况下一致。已知有两类偏差：少数概率值落在 0.5 阈值边界上的判定
 可能与参考不同；单句超出词阶段窗口（256 减特殊 token）容量时，该句不做形态论分析，
@@ -16,29 +16,54 @@ workspace 多个 crate，不用 `mod.rs`。
 - `crates/normalize` — NFKC 与字符变换表归一化
 - `crates/tokenizer` — 字符侧与词侧分词
 - `crates/encoder` — 神经网络前向的后端抽象（trait `Encoder`）
-- `crates/heads` — 13 个输出头（argmax 与掩码表），以及它们的 GPU 前向
+- `crates/heads` — 13 个输出头的 logits 计算与 argmax（CPU 实现），以及它们的 GPU 前向
 - `crates/pipeline` — 流程编排：字符阶段 → Juman++ 文本 → 分窗 → 词阶段 → KNP 文本
 - `cli` — 可执行入口
 
-### 前向的两条路径
+## 前向的实现
 
-**编码器**取哪个实现由 `KWJA_BACKEND` 决定，二者互斥：
+一次完整分析的前向分三层，各层的执行方式不同。
 
-| `KWJA_BACKEND` | 编码器实现 | 设备 |
+| 层 | 计算内容 | 权重格式 |
 | --- | --- | --- |
-| 不设、或 `cublas`、或 `ort` | ONNX Runtime（`ort_backend/`） | 由 `--device` 决定，可 GPU |
-| `candle`、`rust` | 纯 Rust candle（`candle_backend/`） | 恒 CPU，靠统一 rayon 线程池并行 |
+| 编码器 | DeBERTa 前向，产出词级与 token 级隐状态 | ONNX（`char_dynamic.onnx` / `word_encoder7.onnx`） |
+| 13 个头 | 分类、序列标注、依存、共指、談話関係 | 自定义二进制（`models/cublas/`）或 ONNX 融合图 |
+| 分词 | 字符与词的切分 | HuggingFace `tokenizer.json` |
 
-**13 个头的前向**是另一层选择，只在编码器跑在 CUDA 上时才生效：
+ONNX 是模型文件格式，ONNX Runtime（ORT）是执行该格式的推理引擎，cuBLAS 是 NVIDIA 的矩阵运算库。
+编码器由 ORT 加载 ONNX 模型、在 CUDA 执行；**13 个头的默认路径不经过 ONNX 也不经过 ORT**，
+它直接调用 cuBLAS 与自写的 CUDA kernel。
 
-| `KWJA_BACKEND` | 头前向实现 |
-| --- | --- |
-| 不设、或 `cublas` | cuBLAS 直调（`cublas_heads/`），读 `models/cublas/` 权重。**默认** |
-| `ort` | ORT 融合图（`gpu_heads/`），读 `heads_fused.onnx` 与 `dep_type.onnx` |
-| `candle`、`rust` | 不适用，头在 CPU 上跑 Rust 实现 |
+### 编码器
 
-两层由 `gpu_backend.rs` 与 `cli/src/main.rs` 分发。**编码器在 GPU、头在 CPU 是混跑形态，
-程序会报错退出**——它不报错时产出也正确，只是慢，容易被忽略。
+编码器实现由 `KWJA_BACKEND` 选择，两种互斥。
+
+| `KWJA_BACKEND` | 实现 | 设备 |
+| --- | --- | --- |
+| 不设、`cublas`、`ort`，或其它值 | ONNX Runtime（`crates/encoder/src/ort_backend/`） | 由 `--device` 决定，可 GPU |
+| `candle`、`rust` | 纯 Rust candle（`crates/encoder/src/candle_backend/`） | 恒 CPU |
+
+`--device` 只对 ORT 后端有意义。candle 后端在代码里固定为 CPU，并行靠统一的 rayon 线程池，
+不与 ORT 的 CPU EP 争核。
+
+### 13 个头
+
+头前向的实现目标取决于编码器落在哪个设备上。
+
+**编码器在 CUDA 时**，头前向由 `KWJA_BACKEND` 的取值决定：
+
+| `KWJA_BACKEND` | 实现 | 权重 | 覆盖的头 |
+| --- | --- | --- | --- |
+| 不设或 `cublas` | cuBLAS 直调（`crates/heads/src/cublas_heads/`） | `assets/models/cublas/weights.bin` + `manifest.json` | 全部 13 个 |
+| `ort` | ORT 融合图（`crates/heads/src/gpu_heads/`） | `heads_fused.onnx` + `dep_type.onnx` | 融合图 12 个，依存类型 1 张独立图 |
+
+默认是第一条。两条路做的都是矩阵乘与逐元素运算，分类结果一致。
+
+**编码器在 CPU 时**，头前向走 `crates/heads/src/forward/` 的纯 Rust 实现，读 safetensors 权重，
+按头拆成独立任务交给 rayon 并行。这条路径不依赖 ORT，也不需要 CUDA。
+
+**编码器在 GPU、头在 CPU 是不允许的形态**。它不报错、产出也正确，只是慢，容易被忽略，
+所以程序在该形态下直接报错退出；测试里由 `assert_device_shape()` 拦截。
 
 ## 构建与运行
 
@@ -84,7 +109,7 @@ CUDA 运行库（cudart64_12、cudnn64_9、cublas64_12 等）在 `assets/cuda/`�
 
 | 变量 | 作用 | 默认 |
 | --- | --- | --- |
-| `KWJA_BACKEND` | 编码器与头前向的实现，取值见上文「前向的两条路径」 | `cublas` |
+| `KWJA_BACKEND` | 选择编码器实现；编码器在 CUDA 时同时选择头前向实现。取值见「前向的实现」 | `cublas` |
 | `KWJA_ORT_DLL` | onnxruntime.dll 路径 | `assets/ort/onnxruntime/capi/onnxruntime.dll` |
 | `KWJA_CUDA_DLL_DIR` | CUDA 运行库目录 | `assets/cuda` |
 | `KWJA_TIMING` | 设任意值则输出分段计时 | 不输出 |
