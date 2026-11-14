@@ -85,7 +85,11 @@ fn run() -> anyhow::Result<()> {
                     predictor
                         .set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Cublas(gpu)));
                 }
-                Ok(None) => eprintln!("头前向：未找到 models/cublas 权重，留在 CPU"),
+                // ★权重缺失时**必须报错退出**，不许静默留在 CPU：
+                //   编码器在 GPU、头在 CPU 是混跑状态——不报错、产出也对，只是慢一倍，
+                //   用户根本看不出。 我写测试时正是这样漏掉的（见 tests/aozora_corpus.rs 的说明）。
+                Ok(None) => bail!(concat!("找不到 models/cublas 权重，cuBLAS 头无法接线；", 
+                    "要么补权重，要么显式用 KWJA_BACKEND=ort 或 --device cpu")),
                 Err(e) => return Err(anyhow::anyhow!("加载 cuBLAS 权重失败：{e}")),
             }
         } else {
@@ -95,7 +99,9 @@ fn run() -> anyhow::Result<()> {
                     predictor
                         .set_gpu_heads(Some(kwja_heads::gpu_backend::GpuHeadsBackend::Ort(gpu)));
                 }
-                Ok(None) => eprintln!("头前向：未找到 heads_fused.onnx / dep_type.onnx，留在 CPU"),
+                // 同上：缺 ONNX 头也不许静默留 CPU（混跑）。
+                Ok(None) => bail!(concat!("找不到 heads_fused.onnx / dep_type.onnx，ORT 头无法接线；", 
+                    "要么补模型，要么显式用 --device cpu")),
                 Err(e) => return Err(anyhow::anyhow!("加载头 ONNX 失败：{e}")),
             }
         }

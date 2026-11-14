@@ -123,16 +123,32 @@ impl WordTokenizer {
             .iter()
             .map(|w| w.map(|x| x as usize))
             .collect();
-        let remaining = self
+        // ★超长窗不在这里报错（ 修）：
+        //   Python 参考实现在 word_inference.py:118-121 是**打 warning 后 continue**，
+        //   即「这一窗不产出任何内容」，而不是让整条链失败。
+        //   原先这里 ok_or_else 直接 Err，而上层 prep_windows_* 里「num_tokens 超限就 push None」
+        //   的判断永远走不到（它需要拿到 encoding 才能查 num_tokens）——顺序颠倒，
+        //   结果是一遇到超长窗整章就挂。实测：青空文库《吾輩は猫である》第 9 章有 267 个词素
+        //   编出 380 个 id 的窗，直接让整书测试失败。
+        //
+        //   现在的做法：超长时把 num_tokens 原样带出去（不 pad、不截断），
+        //   由调用方按 `num_tokens > max_seq_length - n_specials` 判断跳过。
+        //   返回的 input_ids/attention_mask 在超长情况下**未补齐**，调用方必须先判断
+        //   num_tokens 再用，不许直接喂模型。
+        let Some(remaining) = self
             .max_seq_length
             .checked_sub(num_tokens + self.special_ids.len())
-            .ok_or_else(|| {
-                format!(
-                    "窗口过长：{} 个词素编出 {} 个 id，超出上限",
-                    surfs.len(),
-                    num_tokens
-                )
-            })?;
+        else {
+            // 超长：原样返回，交给调用方跳过
+            return Ok(WindowEncoding {
+                input_ids,
+                attention_mask,
+                word_ids,
+                num_tokens,
+                max_seq_length: self.max_seq_length,
+                num_specials: self.special_ids.len(),
+            });
+        };
         input_ids.extend_from_slice(&self.special_ids);
         attention_mask.extend(std::iter::repeat_n(1, self.special_ids.len()));
         word_ids.extend(std::iter::repeat_n(None, self.special_ids.len()));

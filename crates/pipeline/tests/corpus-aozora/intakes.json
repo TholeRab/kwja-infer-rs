@@ -1,0 +1,88 @@
+{
+ "schema": "kwja-infer/corpus-intake",
+ "generated_by": "tools/aozora_to_corpus.py",
+ "source": {
+  "kind": "aozora",
+  "card": "789",
+  "file": "789_14547.html",
+  "url": "https://www.aozora.gr.jp/cards/000148/files/789_14547.html",
+  "license": "青空文库：著作权消灭或已获授权，可自由使用（见 aozora.gr.jp/guide/aozora_bunka_faq）"
+ },
+ "book": {
+  "title": "吾輩は猫である",
+  "author": "夏目漱石",
+  "language": "ja"
+ },
+ "chapters": [
+  {
+   "id": "CH-0001",
+   "file": "bk-CH-0001.txt",
+   "title": "一",
+   "segments": 33
+  },
+  {
+   "id": "CH-0002",
+   "file": "bk-CH-0002.txt",
+   "title": "二",
+   "segments": 152
+  },
+  {
+   "id": "CH-0003",
+   "file": "bk-CH-0003.txt",
+   "title": "三",
+   "segments": 31
+  },
+  {
+   "id": "CH-0004",
+   "file": "bk-CH-0004.txt",
+   "title": "四",
+   "segments": 208
+  },
+  {
+   "id": "CH-0005",
+   "file": "bk-CH-0005.txt",
+   "title": "五",
+   "segments": 215
+  },
+  {
+   "id": "CH-0006",
+   "file": "bk-CH-0006.txt",
+   "title": "六",
+   "segments": 48
+  },
+  {
+   "id": "CH-0007",
+   "file": "bk-CH-0007.txt",
+   "title": "七",
+   "segments": 59
+  },
+  {
+   "id": "CH-0008",
+   "file": "bk-CH-0008.txt",
+   "title": "八",
+   "segments": 183
+  },
+  {
+   "id": "CH-0009",
+   "file": "bk-CH-0009.txt",
+   "title": "九",
+   "segments": 230
+  },
+  {
+   "id": "CH-0010",
+   "file": "bk-CH-0010.txt",
+   "title": "十",
+   "segments": 418
+  },
+  {
+   "id": "CH-0011",
+   "file": "bk-CH-0011.txt",
+   "title": "十一",
+   "segments": 668
+  }
+ ],
+ "totals": {
+  "chapters": 11,
+  "segments": 2245
+ }
+}

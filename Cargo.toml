@@ -30,3 +30,4 @@ edition.workspace = true
 kwja-encoder = { path = "crates/encoder" }
 kwja-pipeline = { path = "crates/pipeline" }
 kwja-heads = { path = "crates/heads" }
+kwja-normalize = { path = "crates/normalize" }

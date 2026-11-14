@@ -92,6 +92,22 @@ impl WordPredictor {
         self.gpu_heads = gpu_heads;
     }
 
+    /// 头前向现在跑在哪：`None` = CPU，`Some("cublas"|"ort-cuda")` = GPU。
+    ///
+    /// ★**为什么要有这个 getter**： 我写的公版语料测试漏了
+    ///   `set_gpu_heads`，实际跑成「编码器在 GPU、13 个头在 CPU」的混跑状态——
+    ///   **它不报错、产出也对，只是慢**，靠肉眼看日志才发现。
+    ///   有了这个查询接口，测试可以断言「要求全 GPU 时头真的在 GPU」，
+    ///   把这类「静默降级」变成当场失败。
+    #[must_use]
+    pub fn head_device(&self) -> Option<&'static str> {
+        match self.gpu_heads {
+            None => None,
+            Some(kwja_heads::gpu_backend::GpuHeadsBackend::Cublas(_)) => Some("cublas"),
+            Some(kwja_heads::gpu_backend::GpuHeadsBackend::Ort(_)) => Some("ort-cuda"),
+        }
+    }
+
     /// 一份 char 产出（Juman++ 文本）转成 KNP 文本（对应一次 predict 批）。
     pub fn predict_text(
         &mut self,
