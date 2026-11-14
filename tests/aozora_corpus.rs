@@ -271,8 +271,15 @@ fn aozora_first_chapter_runs() {
 
 /// 全 11 章：逐章跑通，验证长章节（第 11 章 668 段）不崩。
 ///
-/// 比单章慢（约 1 分钟），但能确认不是只有第一章碰巧能跑。
+/// **默认不跑**：整轮约 170 秒（占 `cargo test --workspace` 的绝大部分），
+/// 而它验的只是「不崩、字段齐」，这些用一次 CLI 手动跑同样能看出来。
+/// 改代码动了 word 阶段的组装或窗口切分之后，再显式跑一次：
+///
+/// ```bash
+/// cargo test --release --test aozora_corpus -- --ignored --nocapture
+/// ```
 #[test]
+#[ignore = "整轮约 170 秒；需要 GPU 与完整素材，用 --ignored 显式开启"]
 fn aozora_all_chapters_run() {
     let Some(chapters) = aozora_chapters() else {
         return;

@@ -22,27 +22,69 @@ KWJA 推理的 Rust 侧实现：ONNX Runtime（CUDA）＋ tokenizers。
 - `crates/pipeline` — 流程编排：char 阶段 → Juman++ 文本 → 分窗 → word 阶段 → KNP 文本
 - `cli` — `kwja-infer` 可执行入口（`--model-dir` / `--device` / `--input`）
 
-## 构建
+## 构建与运行
 
 ```bash
-cargo build
+cargo build --release
 cargo clippy --workspace --all-targets
 ```
+
+模型与运行库直接用仓内 `assets/`，`--model-dir` 可省略（默认从 exe 所在目录向上找 `assets/`）：
+
+```bash
+# 单文件输入，KNP 结果打到 stdout
+target/release/kwja-infer.exe --input 输入.txt > 输出.knp
+
+# 指定设备：auto（默认，无 CUDA 时回落 CPU）/ cuda（失败即报错）/ cpu
+target/release/kwja-infer.exe --device cuda --input 输入.txt > 输出.knp
+
+# 指定素材目录（默认不需要）
+target/release/kwja-infer.exe --model-dir D:/kwja-assets --input 输入.txt > 输出.knp
+```
+
+**输入口径**：UTF-8 编码。多章输入时每章内容后跟一行单独的 `EOD`，分章处理；
+单章输入可不加。**输出**：KNP 格式文本到 stdout，诊断信息到 stderr。
+
+**计时**：设 `KWJA_TIMING=1` 会在 stderr 打出编码/解码/合并/渲染各段耗时。
 
 ## 运行时的 DLL
 
 - `onnxruntime.dll` 由 `ort::init_from(绝对路径)` 显式加载（`load-dynamic` feature），默认指向
   `assets/ort/onnxruntime/capi/onnxruntime.dll`（**本仓内**），可用环境变量 `KWJA_ORT_DLL` 覆盖。
-  **不能靠链接期导入 + PATH**：本机 `C:\Windows\System32` 有一份旧版 `onnxruntime.dll`（1.17.x），
-  Windows 加载器对静态导入的搜索顺序是 exe 目录 → System32 → PATH，System32 永远压过 PATH。
+  **不能靠链接期导入 + PATH**：Windows 加载器对静态导入的搜索顺序是
+  exe 目录 → System32 → PATH。系统里若另有旧版 `onnxruntime.dll`，它会压过 PATH 上的版本，
+  所以必须走显式绝对路径加载。
 - CUDA 运行时依赖（cudart64_12、cudnn64_9、cublas64_12 等）在 `assets/cuda/`（**本仓内**），
   启动时按依赖序预载，可用环境变量 `KWJA_CUDA_DLL_DIR` 覆盖。ORT 在 Rust 进程内解析依赖，
   不走 `PATH`；`onnxruntime_providers_cuda.dll` 与主 DLL 同目录。
 
+## 环境变量
+
+| 变量 | 作用 | 默认 |
+| --- | --- | --- |
+| `KWJA_BACKEND` | 头前向实现：`cublas`（cuBLAS 直调）/ `ort`（ORT 融合图）/ `candle`·`rust`（纯 Rust，恒 CPU） | `cublas` |
+| `KWJA_ORT_DLL` | onnxruntime.dll 路径 | `assets/ort/onnxruntime/capi/onnxruntime.dll` |
+| `KWJA_CUDA_DLL_DIR` | CUDA 运行库目录 | `assets/cuda` |
+| `KWJA_TIMING` | 设任意值则输出分段计时 | 不输出 |
+| `KWJA_HF_HUB` | candle 后端用的 HF 缓存目录 | 必填（candle 路线） |
+| `KWJA_DEVICE` | 测试用：`cuda`/`cpu`，决定断言的形态 | `cuda` |
+| `本地语料目录` | 测试用：外部语料目录 | 仓内 `corpus-aozora/` |
+| `KWJA_ONNX_DIR` | 测试用：模型目录 | `assets/models` |
+
+## 测试
+
+```bash
+cargo test --workspace                    # 单元与结构测试（秒级）
+cargo test --release --test aozora_corpus -- --ignored   # 公版语料全 11 章（约 3 分钟，需 GPU）
+```
+
+`tests/aozora_corpus.rs` 用青空文库《吾輩は猫である》验整条链路跑通与产出结构合法。
+它不验与参考实现的数值等价——**等价性需自备参考产出对拍，本仓不含基线**。
+
 ## 发行打包
 
 ```cmd
-tools\build-release.cmd -p kwja-infer     :: 只构建（绕开 C 盘目标目录与 TEMP 链接故障）
+tools\build-release.cmd -p kwja-infer     :: 只构建（固定产物落 target\，避开外部 target 目录与临时目录的链接问题）
 tools\package-release.cmd                  :: 构建 + 出包（默认先构建）
 tools\package-release.cmd --skip-build     :: 只出包，用现有 target\release\kwja-infer.exe
 ```
@@ -97,6 +139,18 @@ HF_ENDPOINT=https://hf-mirror.com python tools/fetch-assets.py --only tokenizers
 2. **`cuda` 这一步拷的是当前 Python 环境里的 `torch/lib`**，所以环境必须装 cu126 版；
    装成 CPU 版会拷到一堆没用的东西（脚本会报缺哪个 DLL）。
 
-**13 头（`heads_fused.onnx` / `dep_type.onnx`）需单独导出**：
+**13 头（`heads_fused.onnx` / `dep_type.onnx`）需单独产出**：
 这两个图由上游导出流程生成（12 头融合图 ＋ 依赖类型图，opset 17，动态 batch/token_seq/morph_seq）。
-`fetch-assets.py` 只装配其余素材，不代跑导出步骤。
+`fetch-assets.py` 装配其余素材，不含这两个图的导出步骤——从 `kwja` 权重重新导出需要
+上游工程环境，不属于本仓职责。已有产出时直接放进 `assets/models/` 即可。
+
+## 目录说明
+
+| 路径 | 说明 |
+| --- | --- |
+| `assets/` | 模型、ORT、CUDA 运行库、词典、分词器；约 5.2 GB，不进 git |
+| `crates/` | 各功能 crate，见上文「结构」 |
+| `cli/` | 可执行入口 |
+| `tests/` | 跨 crate 的集成测试（公版语料冒烟） |
+| `tools/` | 素材装配、模型图简化、发行打包 |
+| `_bench/` | 基准与实验产物（计时日志、对拍输出、实验用模型副本）；不进 git，不参与构建与测试 |
