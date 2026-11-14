@@ -94,11 +94,10 @@ impl WordPredictor {
 
     /// 头前向现在跑在哪：`None` = CPU，`Some("cublas"|"ort-cuda")` = GPU。
     ///
-    /// ★**为什么要有这个 getter**： 我写的公版语料测试漏了
-    ///   `set_gpu_heads`，实际跑成「编码器在 GPU、13 个头在 CPU」的混跑状态——
-    ///   **它不报错、产出也对，只是慢**，靠肉眼看日志才发现。
-    ///   有了这个查询接口，测试可以断言「要求全 GPU 时头真的在 GPU」，
-    ///   把这类「静默降级」变成当场失败。
+    /// ★**为什么要有这个 getter**：漏调 `set_gpu_heads` 会让编码器在 GPU、
+    ///   13 个头在 CPU，这种形态**不报错、产出也对，只是慢**，只能靠日志发现。
+    ///   有了查询接口，测试可以断言「要求全 GPU 时头真的在 GPU」，
+    ///   把静默降级变成当场失败。
     #[must_use]
     pub fn head_device(&self) -> Option<&'static str> {
         match self.gpu_heads {

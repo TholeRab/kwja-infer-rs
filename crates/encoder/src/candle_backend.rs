@@ -167,15 +167,13 @@ impl CandleBackend {
             .parent()
             .unwrap_or(Path::new("."))
             .join("char_deberta-v2-base-wwm.safetensors");
-        // HF config 从 hub 缓存解析；缓存根取 KWJA_HF_HUB，未设置时按上级目录约定解析。
-        let hub = word_onnx
-            .ancestors()
-            .nth(3)
-            .map(|p| p.join("../外部素材目录/hf/hub"))
-            .unwrap_or_else(|| PathBuf::from("../外部素材目录/hf/hub"));
-        let hub = std::env::var("KWJA_HF_HUB")
-            .map(PathBuf::from)
-            .unwrap_or(hub);
+        // HF config 从 hub 缓存解析，缓存根必须由 KWJA_HF_HUB 显式指定。
+        // 不设默认值：默认猜一个路径会在环境不符时静默读到错误配置。
+        let hub = std::env::var("KWJA_HF_HUB").map(PathBuf::from).map_err(|_| {
+            EncoderError::Session(
+                "candle 后端需要 KWJA_HF_HUB 指向 HuggingFace hub 缓存目录".to_string(),
+            )
+        })?;
         let word_config = snapshot_config(&hub, "models--ku-nlp--deberta-v2-base-japanese")?;
         let char_config =
             snapshot_config(&hub, "models--ku-nlp--deberta-v2-base-japanese-char-wwm")?;

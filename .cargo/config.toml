@@ -1,4 +1,4 @@
-# ORT 素材在**本仓内** assets/ort/（ 起不再引用 参考实现仓）。
+# ORT 素材在**本仓内** assets/ort/。
 # 版本：onnxruntime-gpu 1.23.2；来源见 assets/ort/SOURCE.md。
 #
 # 运行时走 load-dynamic（ort feature），不靠链接期导入，所以这里只需要指 DLL 目录；

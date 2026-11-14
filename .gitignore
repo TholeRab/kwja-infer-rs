@@ -18,14 +18,8 @@
 link-tmp/
 __pycache__/
 
-# 测试语料：第三方语料 原文，著作权属作者，不随本仓公开。
-# 放在外部语料目录，测试前拷入或用 本地语料目录 指过去。
+# 第三方语料：著作权属原作者，不随本仓分发。需要时自备本地语料目录。
 /crates/pipeline/tests/corpus/
 
-# 测试基线：约 36 MB，可由 tools/gen-fixtures.sh 从语料重建。
-# 不跟语料一起公开（它们逐行含原文）。
-/crates/pipeline/tests/fixtures/*.txt
-
-# 临时基准/探针目录：含 procmon 日志(3.5 GB)、备份的 onnx(460 MB) 等，
-# 一律不进 git。 曾因 git add -A 误提交过 4.4 GB，见该日提交说明。
+# 临时基准与实验产物（计时日志、对拍输出、实验用模型副本），不参与构建与测试。
 /_bench/

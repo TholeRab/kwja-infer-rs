@@ -72,8 +72,7 @@ pub(super) fn resolve_cuda_dir(models_dir: &std::path::Path) -> std::path::PathB
 }
 
 pub(super) fn init(models_dir: &std::path::Path) -> Result<Handles, String> {
-    // ★不再硬编码开发机 venv 路径：那段 `Python 环境/...`
-    //   只在本机能用，发行包到别的机器必然失败。默认改为发行包自带的 assets/cuda。
+    // CUDA 运行库目录取 KWJA_TORCH_LIB，未设时用发行包自带的 assets/cuda。
     let lib_dir = std::env::var("KWJA_TORCH_LIB")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| resolve_cuda_dir(models_dir));

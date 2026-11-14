@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::Instant;
 
 fn main() -> Result<(), String> {
+    // 模型目录按当前工作目录解析；从仓根运行（cargo run 即如此）。
     let models = Path::new("assets/models");
     let g = GpuHeads::load(models, Device::Cuda)?.ok_or("模型缺失")?;
     // 典型 3 章窗：token 数与词素数取中位偏上；最坏档另测

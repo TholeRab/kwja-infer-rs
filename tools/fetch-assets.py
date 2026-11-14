@@ -110,7 +110,7 @@ def fetch_tokenizers() -> None:
       Rust 侧走的是 `vocab.txt`／`tokenizer.json`，从不读 spm（grep 无引用）。
     """
     # ★缓存根必须在 import huggingface_hub **之前**设好：
-    #   那个包在导入时就把 HF_HOME 读成模块级常量，之后再 setdefault 无效（实测踩过）。
+    #   那个包在导入时就把 HF_HOME 读成模块级常量，之后再 setdefault 无效。
     #   默认落在 %USERPROFILE%\.cache\huggingface，本机那目录没有写权限（WinError 5）。
     #   这里显式指到 assets/_hfcache，随素材一起删。
     os.environ["HF_HOME"] = str(ASSETS / "_hfcache")
@@ -258,10 +258,10 @@ def export_models(char_ckpt: Path, word_ckpt: Path) -> None:
     del ew, word_m
     torch.cuda.empty_cache()
 
-    # ---- 13 头：复用 参考实现仓 的脚本（它自带与 torch 的对拍自检）----
+    # ---- 13 头：由上游导出流程单独生成，本脚本不代跑 ----
     say("")
     say("[models] 13 头（heads_fused / dep_type）需要另外跑一次：")
-    say("    python <参考实现仓>/阶段一/导出Rust侧13头ONNX.py")
+    say("    见 assets/SOURCE.md 的 heads_fused.onnx / dep_type.onnx 条目")
     say("  该脚本导出后会自动拷进 assets/models/，并做 ORT-CPU 对拍自检。")
     say("  这里不代跑：那份脚本自己对拍、自己报错，代跑会把两套环境混在一起。")
 

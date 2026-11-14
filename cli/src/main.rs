@@ -87,7 +87,7 @@ fn run() -> anyhow::Result<()> {
                 }
                 // ★权重缺失时**必须报错退出**，不许静默留在 CPU：
                 //   编码器在 GPU、头在 CPU 是混跑状态——不报错、产出也对，只是慢一倍，
-                //   用户根本看不出。 我写测试时正是这样漏掉的（见 tests/aozora_corpus.rs 的说明）。
+                //   用户根本看不出。测试里由 assert_device_shape() 拦截这种形态。
                 Ok(None) => bail!(concat!("找不到 models/cublas 权重，cuBLAS 头无法接线；", 
                     "要么补权重，要么显式用 KWJA_BACKEND=ort 或 --device cpu")),
                 Err(e) => return Err(anyhow::anyhow!("加载 cuBLAS 权重失败：{e}")),

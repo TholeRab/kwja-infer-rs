@@ -174,7 +174,9 @@ struct Case {
 }
 
 fn main() {
-    let torch_lib = "Python 环境/Lib/site-packages/torch/lib";
+    // CUDA 运行库目录由 KWJA_CUDA_DLL_DIR 指定（与主程序同口径）。
+    let torch_lib = std::env::var("KWJA_CUDA_DLL_DIR")
+        .expect("需设 KWJA_CUDA_DLL_DIR 指向含 cudart64_12.dll / cublasLt64_12.dll 的目录");
     let rt = lib(&format!("{torch_lib}/cudart64_12.dll"));
     let lt_dll = lib(&format!("{torch_lib}/cublasLt64_12.dll"));
     let nvrtc_dll = lib(&format!("{torch_lib}/nvrtc64_120_0.dll"));

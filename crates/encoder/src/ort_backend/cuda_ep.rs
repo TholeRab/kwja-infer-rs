@@ -22,7 +22,7 @@ pub fn execution_providers(device: Device) -> Vec<ExecutionProviderDispatch> {
         // 矩阵乘尾数从 23 位降到 10 位，logits 出现 1e-3 量级误差，argmax 在边界处翻转。
         // torch 的 allow_tf32=False 管不到 ORT，必须在 provider options 里传，
         // 两个独立开关。
-        // ★arena_extend_strategy 必须是 SameAsRequested（ 修内存）：
+        // ★arena_extend_strategy 必须是 SameAsRequested：
         //   默认的 NextPowerOfTwo 会按 2 的幂预留一大块，且**只涨不缩**——
         //   整书 4691 窗跑下来，进程 Private 内存线性涨到 6.2 GB。
         //   SameAsRequested 只按实际请求量扩，不再预占。

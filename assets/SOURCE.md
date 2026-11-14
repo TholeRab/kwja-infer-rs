@@ -1,11 +1,7 @@
 # assets/ 素材来源与版本
 
-**为什么有这个文件**： 起本仓**不再引用 `参考实现仓` 的任何路径**，
-素材一律拷进本仓 `assets/`。在此之前代码里硬编码了
-`外部素材\_cache\...`，跨仓依赖会让本仓无法独立分发。
-
-**验证方式**：把 `外部素材目录` 整个改名藏起来后，
-`cargo test --workspace` 仍然全过（25 个测试）。
+**为什么有这个文件**：本仓自带全部素材，代码与构建不引用任何仓外路径，
+这样仓库可以独立分发。素材一律放在本仓 `assets/` 下。
 
 ## 目录
 
@@ -26,7 +22,7 @@
 | `char_dynamic.onnx` | 404.3 MB | KWJA char 模块导出，batch 固定 1、seq 动态 |
 | `word_encoder7.onnx` | 0.1 MB | KWJA word encoder 图（batch/seq 均动态） |
 | `word_encoder7.onnx.data` | 426.5 MB | 上者的外部权重 |
-| `heads_fused.onnx` | 75.4 MB | word 12 头融合图（`导出Rust侧13头ONNX.py` 导出；opset 17、batch/token_seq/morph_seq 动态；ORT-CPU 对 torch 自检通过） |
+| `heads_fused.onnx` | 75.4 MB | word 12 头融合图（由上游导出流程生成；opset 17、batch/token_seq/morph_seq 动态） |
 | `dep_type.onnx` | 9.5 MB | 依存类型头（同上脚本；输入 (P,1536) 批量动态） |
 
 **★只拷了实际用到的 5 个文件。** 原目录里另有 `_opt.onnx`、`char_full.onnx`、
@@ -55,7 +51,7 @@ DLL 只导出 4 个符号（`OrtGetApiBase` ＋ 三个 `OrtSessionOptionsAppendE
 
 ## cuda/
 
-**17 个 DLL，合计约 2.1 GB**（ 补入 nvrtc 三个：builtins64_126 / nvrtc64_120_0 / alt），来自 torch 2.14.1+cu126 的 `torch/lib/`。
+**17 个 DLL，合计约 2.1 GB**（含 nvrtc 三个：builtins64_126 / nvrtc64_120_0 / alt），来自 torch 2.14.1+cu126 的 `torch/lib/`。
 
 **为什么必须自带**：ORT 的 CUDA EP 在 Rust 进程里做依赖解析时**不走 PATH**。
 不预载时 EP 照样注册成功（`active_providers` 含 CUDA），
@@ -82,9 +78,7 @@ DLL 只导出 4 个符号（`OrtGetApiBase` ＋ 三个 `OrtSessionOptionsAppendE
 **★装载顺序不能乱**：`cudnn_ops64_9.dll` 静态依赖 `cudnn_graph64_9.dll`，
 graph 必须先于 ops/cnn/adv 装入。顺序写在 `session.rs` 的 `CUDA_DLLS` 数组里。
 
-**★ 前这里指向仓外** `Python 环境/.../torch/lib`，
-现在已拷进本仓，`KWJA_CUDA_DLL_DIR` 仍可覆盖。
-验证方式：把那个目录改名藏起来后，`cargo test --workspace` 仍全过。
+CUDA 运行库已拷进本仓 `assets/cuda/`，`KWJA_CUDA_DLL_DIR` 可覆盖该路径。
 
 ## tokenizers/
 
@@ -102,10 +96,8 @@ Rust 侧是按 transformers 源码逐 id 复刻的（见 `crates/tokenizer/src/c
 ## 更新素材的步骤
 
 ```bash
-# 1. 从 Python 侧拷（只在需要重新导出模型时）
-cp ../外部素材目录/onnx/char_dynamic.onnx        assets/models/
-cp ../外部素材目录/onnx/word_encoder7.onnx       assets/models/
-cp ../外部素材目录/onnx/word_encoder7.onnx.data  assets/models/
+# 1. 重新导出模型（需要 CUDA GPU）
+python tools/fetch-assets.py --only models
 
 # 2. 跑一遍全量测试，确认没破坏
 cargo test --workspace
