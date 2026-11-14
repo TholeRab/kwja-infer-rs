@@ -224,11 +224,42 @@ impl WordPredictor {
             drop(req_tx); // 编码线程随之收尾
             // 主线程做合并：段 N 合并与段 N+1 解码、段 N+2 编码重叠。
             // owner/order 仍按段序登记（首窗定稿），结果按窗序写入，逐字节结果不变。
-            for _ in 0..chunks.len() {
+            for seg_idx in 0..chunks.len() {
                 let outs = dec_rx
                     .recv()
                     .map_err(|_| "解码线程意外退出".to_string())??;
                 let t = std::time::Instant::now();
+
+                // ---- 补记被跳过的句子（超长窗） ----
+                // outs 与 chunks[seg_idx] 同序：outs[i] 是 None 表示该窗词素超限被跳过。
+                // 上游 kwja 在这里只是一句 `continue`，丢掉整窗且不吭声（PR #264 确认
+                // 「超长不分析」是其本意）；我们不改变这个分析口径，但**必须让人看得见丢了什么**，
+                // 所以把跳过窗里的句子整句留档，渲染成一条「未定義語」词素行。
+                {
+                    let seg = chunks[seg_idx];
+                    let mut skipped_now: Vec<crate::word_merge::SkippedSentence> = Vec::new();
+                    for (i, out) in outs.iter().enumerate() {
+                        if out.is_none() && i < seg.len() {
+                            for s in &seg[i].sentences {
+                                // 表层直接拼接。**段落边界在这里拿不到，也不需要**：
+                                // 一个 S-ID 可能跨段（实测第 9 章「時下秋冷」那句跨 4 段），
+                                // 但这是全链路的既有行为——char 阶段输出 Juman++ 时就不带换行，
+                                // 正常分析的句子同样还原不出段落。本块只要与正常句同口径即可。
+                                skipped_now.push(crate::word_merge::SkippedSentence {
+                                    sid: s.sid.clone(),
+                                    text: s.surfs.concat(),
+                                });
+                            }
+                        }
+                    }
+                    if !skipped_now.is_empty() {
+                        eprintln!(
+                            "警告：word 模块跳过了 {} 句（词素超过窗口上限，未做形态论分析；KNP 中以未定義語行保留原文）",
+                            skipped_now.len()
+                        );
+                        buf.push_skipped(skipped_now);
+                    }
+                }
                 let mut jobs: Vec<(usize, &WinKeep, &WinBig)> = Vec::new();
                 for out in outs.iter().flatten() {
                     let (keep, big) = out;

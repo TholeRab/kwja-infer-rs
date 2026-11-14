@@ -27,6 +27,24 @@ struct StoredWin {
     sids: Vec<String>,
 }
 
+/// 被跳过的句子（超长窗，词模块未分析）。
+///
+/// 为什么要有它：word 模块的窗口上限是 256 − 7 special − 2 = 247 个词素，
+/// 而分窗只按句子切（SequenceSplitter 至少含一句），单句超限时切不开。
+/// 上游 kwja 的做法是用一句 bare `continue` 丢掉整个窗（PR #264 确认该行为
+/// 「是其本意」，因为切点会影响依存与共指分析，属于用户该自己决定的边界）。
+///
+/// 但**丢掉了什么必须让人看得见**：这里把被跳过的句子整句留档，
+/// 渲染成一条 \`未定義語\` 词素行——表层保留原文、分析字段填 KNP 的
+/// 「未分析」形态，字段总数与正常词素行一致（15 列），下游解析不受影响。
+#[derive(Clone)]
+pub(crate) struct SkippedSentence {
+    /// char 阶段给的 S-ID（如 \`c-0-205\`），下游据此与原文对齐。
+    pub(crate) sid: String,
+    /// 整句原文（表层拼接，无空格）。
+    pub(crate) text: String,
+}
+
 /// 输出缓冲：首窗定稿、按插入序渲染。
 #[derive(Default)]
 pub(crate) struct Buffer {
@@ -36,6 +54,8 @@ pub(crate) struct Buffer {
     dep_rows: HashMap<String, (Vec<i32>, Vec<usize>)>,
     rel_rows: HashMap<(String, usize), Vec<RelRow>>,
     dis_rows: HashMap<(String, usize), String>,
+    /// 跳过窗里的句子，按 S-ID 序号渲染时插回原位。
+    skipped: Vec<SkippedSentence>,
 }
 
 /// 一次窗合并的产物：渲染要用的本窗留档与三类行。
@@ -327,6 +347,37 @@ impl Buffer {
         }
     }
 
+    /// 登记一批被跳过的句子（超长窗）。
+    pub(crate) fn push_skipped(&mut self, items: impl IntoIterator<Item = SkippedSentence>) {
+        self.skipped.extend(items);
+    }
+
+    /// 渲染一条「未分析」块。
+    ///
+    /// 形态对齐 KNP 表示未登录词的惯例（上游 seq2seq_format.py 用
+    /// \`未定義語 15 その他 1 * 0 * 0 NIL\`）：
+    ///   - 词性列 = 未定義語 / 15 / その他 / 1（与 Juman++ 对未登录词的一致）
+    ///   - 代表表记 = NIL（无规范表记）
+    ///   - 特征 = <未分析> 标记 + 基本句主辞与用言表记标记（保证下游仍能识别成基本句）
+    /// **字段总数 15，与正常词素行一致**，所以按列解析的下游不用改。
+    fn render_skipped(&self, s: &SkippedSentence, out: &mut String) {
+        out.push_str(&format!("# S-ID:{} kwja:2.6.0", s.sid));
+        out.push('\n');
+        out.push_str("* -1D");
+        out.push('\n');
+        out.push_str("+ -1D <未分析>");
+        out.push('\n');
+        // 三列表层 / 读音 / 原形：表层放原文，读音与原形留 `*`（未分析，没有读音和原形）。
+        // 不能三列都填原文——那会让下游把 400 字符当成读音与原形。
+        out.push_str(&format!(
+            "{} * * 未定義語 15 その他 1 * 0 * 0 NIL <未分析><基本句-主辞><用言表記先頭><用言表記末尾>",
+            s.text
+        ));
+        out.push('\n');
+        out.push_str("EOS");
+        out.push('\n');
+    }
+
     /// 当前待渲染的 sid 数。
     pub(crate) fn order_len(&self) -> usize {
         self.order.len()
@@ -378,10 +429,41 @@ impl Buffer {
             return String::new();
         }
         let n = n.min(self.order.len());
-        let text = {
-            let sids: Vec<&String> = self.order[..n].iter().collect();
-            self.render_sids(sids.into_iter(), tables)
-        };
+
+        // 本批要渲的 sid 与要补的跳过句，按 S-ID 序号合并后统一输出。
+        // ★为什么必须按序号插：S-ID 形如 c-0-205，是 char 阶段的连续句号。
+        //   若把跳过句统统追加到末尾，下游按序号对齐原文就会错位。
+        let batch: Vec<&String> = self.order[..n].iter().collect();
+        let last_sid = batch.last().map(|s| (*s).clone());
+        let mut text = String::new();
+
+        // 取本批范围内的跳过句（S-ID 序号 <= 本批最后一个 sid 的序号）
+        let (mine, rest) = split_skipped_by(&self.skipped, last_sid.as_deref());
+        self.skipped = rest;
+
+        if mine.is_empty() {
+            text = self.render_sids(batch.into_iter(), tables);
+        } else {
+            // 两路按序号归并
+            let mut i = 0usize;
+            let mut j = 0usize;
+            while i < batch.len() || j < mine.len() {
+                let take_skipped = match (batch.get(i), mine.get(j)) {
+                    (Some(b), Some(s)) => sid_ord(s.sid.as_str()) < sid_ord(b.as_str()),
+                    (Some(_), None) => false,
+                    (None, Some(_)) => true,
+                    (None, None) => break,
+                };
+                if take_skipped {
+                    let s = mine[j].clone();
+                    self.render_skipped(&s, &mut text);
+                    j += 1;
+                } else {
+                    text.push_str(&self.render_sids(std::iter::once(batch[i]), tables));
+                    i += 1;
+                }
+            }
+        }
 
         // ---- 释放前 n 个 sid 相关的一切 ----
         // ★性能要点（实测踩过）：不能每次分配 vec![false; wins.len()] 再全扫一遍——
@@ -425,6 +507,45 @@ impl Buffer {
 
         text
     }
+}
+
+/// S-ID 的排序键：把末尾的句号解析成数字，其余部分照字面比较。
+///
+/// S-ID 形如 \`c-0-205\`（\`<doc>-<序号>\`），\`主-10\` 这种字面比较会排在 \`主-9\` 前，
+/// 所以必须按数值比。解析不出数字的（不该出现）退回字面比较，不 panic。
+fn sid_ord(sid: &str) -> (String, usize) {
+    match sid.rsplit_once('-') {
+        Some((head, tail)) => match tail.parse::<usize>() {
+            Ok(n) => (head.to_string(), n),
+            Err(_) => (sid.to_string(), 0),
+        },
+        None => (sid.to_string(), 0),
+    }
+}
+
+/// 把 \`skipped\` 拆成「属于本批」与「留给后续批」两组。
+///
+/// 判据：跳过句的 S-ID 序号 <= 本批最后一个 sid 的序号（同 doc 前缀下）。
+/// 没有本批 sid（末尾收尾）时全部归本批。
+fn split_skipped_by(
+    skipped: &[SkippedSentence],
+    last_sid: Option<&str>,
+) -> (Vec<SkippedSentence>, Vec<SkippedSentence>) {
+    let Some(last) = last_sid else {
+        return (skipped.to_vec(), Vec::new());
+    };
+    let (last_doc, last_no) = sid_ord(last);
+    let mut mine = Vec::new();
+    let mut rest = Vec::new();
+    for s in skipped {
+        let (doc, no) = sid_ord(&s.sid);
+        if (doc == last_doc && no <= last_no) || doc < last_doc {
+            mine.push(s.clone());
+        } else {
+            rest.push(s.clone());
+        }
+    }
+    (mine, rest)
 }
 
 /// 把旧窗的 chunk 平移到本窗坐标（ms/head_gi 加 shift）。
