@@ -7,25 +7,31 @@
 
 | 目录 | 内容 | 体积 |
 | --- | --- | --- |
-| `assets/models/` | ONNX 模型 2 个 ＋ 1 个外部权重 | 831 MB |
+| `assets/models/` | ONNX 模型 2 个、cuBLAS 权重包、ckpt 转换的 safetensors 权重与查表 | 2.6 GB |
 | `assets/ort/` | onnxruntime-gpu 1.23.2（含 CUDA provider） | 389 MB |
 | `assets/tokenizers/` | 两个 HF 模型的 tokenizer 文件 | 3.2 MB |
-| `assets/cuda/` | CUDA 12 + cuDNN 9 运行库 14 个 DLL | **2.0 GB** |
+| `assets/dicts/` | kwja 2.6.0 自带的 jumandic 词典 | 83 MB |
+| `assets/cuda/` | CUDA 12 + cuDNN 9 运行库 17 个 DLL | **2.1 GB** |
 
-**合计约 3.2 GB。全部不进 git**（见 `.gitignore`），
+**合计约 5.2 GB。全部不进 git**（见 `.gitignore`），
 分发时随可执行文件一起打包。
 
 ## models/
 
 | 文件 | 大小 | 来源 |
 | --- | --- | --- |
-| `char_dynamic.onnx` | 404.3 MB | KWJA char 模块导出，batch 固定 1、seq 动态 |
-| `word_encoder7.onnx` | 0.1 MB | KWJA word encoder 图（batch/seq 均动态） |
+| `char_dynamic.onnx` | 438.7 MB | KWJA char 模块导出，batch 固定 1、seq 动态 |
+| `word_encoder7.onnx` | 426.6 MB | KWJA word encoder 图（batch/seq 均动态） |
 | `word_encoder7.onnx.data` | 426.5 MB | 上者的外部权重 |
-| `heads_fused.onnx` | 75.4 MB | word 12 头融合图（由上游导出流程生成；opset 17、batch/token_seq/morph_seq 动态） |
-| `dep_type.onnx` | 9.5 MB | 依存类型头（同上脚本；输入 (P,1536) 批量动态） |
+| `heads_fused.onnx` | 71.9 MB | word 12 头融合图（由上游导出流程生成；opset 17、batch/token_seq/morph_seq 动态） |
+| `dep_type.onnx` | 9.0 MB | 依存类型头（同上脚本；输入 (P,1536) 批量动态） |
+| `char_deberta-v2-base-wwm.safetensors` | 404.0 MB | 上游 ckpt 转换的 char 编码器权重（转换脚本未随仓发布） |
+| `word_deberta-v2-base.safetensors` | 507.5 MB | 上游 ckpt 转换的 word 编码器权重（同上） |
+| `word_heads.safetensors` | 80.9 MB | 上游 ckpt 转换的 word 头权重（同上） |
+| `word_tables.json` | 0.2 MB | word 侧查表数据 |
+| `cublas/weights.bin` ＋ `cublas/manifest.json` | 275.0 MB | cuBLAS 直调路径的权重包，由本项目打包 |
 
-**★只拷了实际用到的 5 个文件。** 原目录里另有 `_opt.onnx`、`char_full.onnx`、
+**★`models/` 现有 11 个文件。** 上游导出目录里另有 `_opt.onnx`、`char_full.onnx`、
 `word_encoder.onnx`、`word_static256.onnx` 等实验产物（约 1.5 GB），**未拷**。
 
 ## ort/

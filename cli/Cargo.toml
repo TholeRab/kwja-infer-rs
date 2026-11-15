@@ -2,6 +2,7 @@
 name = "kwja-infer"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [[bin]]
 name = "kwja-infer"
