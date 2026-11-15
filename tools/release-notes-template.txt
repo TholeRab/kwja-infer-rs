@@ -20,5 +20,5 @@ kwja-infer 发行包（版本号见目录名）
   KWJA_BACKEND=ort      头前向改走 ORT 融合图。
   KWJA_BACKEND=candle   编码器走纯 Rust（配 --device cpu）。
 
-数据规模（交付时的已知情况）：
-  整书实测与 Python 参照逐字节相同。
+对拍结果（交付时的已知情况）：
+  整书实测除极少数恰好骑在 0.5 阈值边界上的样本判定相反外，与 Python 参照逐字节相同。
