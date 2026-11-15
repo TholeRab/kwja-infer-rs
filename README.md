@@ -197,7 +197,7 @@ cargo test --release --test aozora_corpus -- --ignored   # 公版语料全 11 �
 
 ## 许可证
 
-本仓代码以 [MIT](LICENSE) 许可证发布。上游 KWJA 同为 MIT（Copyright (c) 2022 Kyoto University）；随包分发的 JUMAN 词典（jumandic）取自 `kwja` 2.6.0 包，沿用其声明。模型权重转换自 [ku-nlp/kwja-checkpoints](https://huggingface.co/ku-nlp/kwja-checkpoints) `v2.4`，其底座模型 [deberta-v2-base-japanese](https://huggingface.co/ku-nlp/deberta-v2-base-japanese)（含 char-wwm）为 CC-BY-SA-4.0，故权重与分词器素材按 CC-BY-SA-4.0 署名共享；kwja-checkpoints 仓库本身未附许可声明，特此说明。第三方组件：ONNX Runtime（MIT）、PyTorch（BSD-3）、CUDA/cuDNN 运行库（NVIDIA 许可条款）。
+本仓代码以 [MIT](LICENSE) 许可证发布。上游 KWJA 同为 MIT（Copyright (c) 2022 Kyoto University）；随包分发的 JUMAN 词典（jumandic）取自 `kwja` 2.6.0 包，沿用其声明。模型权重转换自 [ku-nlp/kwja-checkpoints](https://huggingface.co/ku-nlp/kwja-checkpoints) `v2.4`，其底座模型 [deberta-v2-base-japanese](https://huggingface.co/ku-nlp/deberta-v2-base-japanese)（含 char-wwm）为 CC-BY-SA-4.0，故权重与分词器素材按 CC-BY-SA-4.0 署名共享；kwja-checkpoints 仓库本身未附许可声明，特此说明。第三方组件：ONNX Runtime（MIT）、PyTorch（BSD-3）、CUDA/cuDNN 运行库（NVIDIA 许可条款）。逐条声明见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
 ## 致谢与引用
 
@@ -414,7 +414,7 @@ Provisioning caveats:
 
 ## License
 
-The code of this repository is released under the [MIT](LICENSE) license. Upstream KWJA is likewise MIT (Copyright (c) 2022 Kyoto University); the JUMAN dictionary (jumandic) distributed with the package comes from the `kwja` 2.6.0 package under the same notice. Model weights are converted from [ku-nlp/kwja-checkpoints](https://huggingface.co/ku-nlp/kwja-checkpoints) `v2.4`, whose base model [deberta-v2-base-japanese](https://huggingface.co/ku-nlp/deberta-v2-base-japanese) (including char-wwm) is CC-BY-SA-4.0, so the weights and tokenizer assets are shared with attribution under CC-BY-SA-4.0; the kwja-checkpoints repository itself carries no license declaration. Third-party components: ONNX Runtime (MIT), PyTorch (BSD-3), CUDA/cuDNN runtime libraries (NVIDIA license terms).
+The code of this repository is released under the [MIT](LICENSE) license. Upstream KWJA is likewise MIT (Copyright (c) 2022 Kyoto University); the JUMAN dictionary (jumandic) distributed with the package comes from the `kwja` 2.6.0 package under the same notice. Model weights are converted from [ku-nlp/kwja-checkpoints](https://huggingface.co/ku-nlp/kwja-checkpoints) `v2.4`, whose base model [deberta-v2-base-japanese](https://huggingface.co/ku-nlp/deberta-v2-base-japanese) (including char-wwm) is CC-BY-SA-4.0, so the weights and tokenizer assets are shared with attribution under CC-BY-SA-4.0; the kwja-checkpoints repository itself carries no license declaration. Third-party components: ONNX Runtime (MIT), PyTorch (BSD-3), CUDA/cuDNN runtime libraries (NVIDIA license terms). See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for the itemized notices.
 
 ## Acknowledgements and citation
 
