@@ -5,7 +5,7 @@ kwja-infer 发行包（版本号见目录名）
 内容：
   kwja-infer.exe      命令行推理程序
   assets\models\      char/word 模型与 13 头权重（word_encoder7 为动态 batch 版）
-  assets\cuda\        CUDA 运行库（14 个 DLL）
+  assets\cuda\        CUDA 运行库（17 个 DLL）
   assets\ort\         ONNX Runtime（load-dynamic 加载）
   assets\dicts\       jumandic 词典
   assets\tokenizers\  分词器
