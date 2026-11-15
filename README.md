@@ -1,11 +1,13 @@
-<a id="zh"></a>
-# kwja-infer-rs
+# <a id="zh"></a>kwja-infer-rs
 
 [中文](#zh) | [English](#en)
 
 KWJA 的推理侧 Rust 重实现：输入日文原文本，输出 KNP 格式的形态论与依存分析结果。整个流程编译成一个独立 exe，运行时不依赖 Python；编码器由 ONNX Runtime 在 CUDA 上执行，13 个输出头默认走 cuBLAS 直调，分词用 tokenizers crate。
 
-产出与上游 KWJA（Python 实现）绝大多数情况下一致。已知有两类偏差：少数概率值落在 0.5 阈值边界上的判定可能与参考不同；单句超出词阶段窗口（256 减特殊 token）容量时，该句不做形态论分析，原样以 `未定義語` 行保留在产出里。
+产出与上游 KWJA（Python 实现）绝大多数情况下一致。与参考产出相比有两处差异，性质不同：
+
+- **数值边界差异（矩阵乘法的累积误差）**：各头的判定由矩阵乘法的输出过 0.5 阈值得到；乘法的累积误差会让 Rust 侧与 Python 参考在极少数恰好骑在 0.5 边界上的样本出现翻转（两侧判定相反）。只影响这些骑线样本，其余绝大多数判定不受影响。
+- **超长句降级（有意设计）**：词阶段窗口容量有限（256 个位置，扣除特殊 token）。某一句超长放不进窗口时，程序不对该句做形态论分析，而是原样以 `未定義語` 行保留在产出里——这是刻意保留的降级路径，避免文档里出现一个超长句就丢掉整份文档的输出，不是缺陷。
 
 ## 上游项目
 
@@ -94,6 +96,8 @@ workspace 拆多个 crate，不用 `mod.rs`：
 
 ## 架构与前向实现
 
+与上游 KWJA 的一个结构性差异：上游以 rhoknp 的对象树（自底向上 Morpheme → BasePhrase → Phrase → Clause → Sentence，外加 Document）承载分析结果；本仓不用 rhoknp，全程纯扁平结构——KNP 文本按章流式渲染直出，中间态是以 sid 索引的扁平表（窗口、行表、归属表），不做对象树建模。
+
 一次完整分析的前向分三层，各层的执行方式不同。
 
 | 层 | 计算内容 | 权重格式 |
@@ -132,6 +136,12 @@ ONNX 是模型文件格式，ONNX Runtime（ORT）是执行该格式的推理引
 
 **编码器在 GPU、头在 CPU 是不允许的形态**。它不报错、产出也正确，只是慢，容易被忽略，所以程序在该形态下直接报错退出；测试里由 `assert_device_shape()` 拦截。
 
+## 性能
+
+以下为开发机实测（RTX 4060 8GB，batch=4，cuBLAS 头 + ORT CUDA 编码器），测试语料 59 章、9,397 段；具体数值随硬件与驱动而异：
+
+- **整书推理 168～211 秒**（同机不同轮约有两成波动）：同一任务下 Python 参考实现约需 11～12 分钟，约 **3～4 倍**提速。
+- **峰值内存约 3.3 GB**：按章流式渲染、即用即释，长文本推理期间内存保持平稳，不随篇幅线性增长。
 ## 运行时的 DLL
 
 ONNX Runtime 与 CUDA 运行库都在仓内，启动时按绝对路径加载。
@@ -205,14 +215,16 @@ KWJA 由京都大学 ku-nlp 实验室与早稻田大学河原研究室开发。�
 
 ---
 
-<a id="en"></a>
-# kwja-infer-rs
+# <a id="en"></a>kwja-infer-rs
 
 [中文](#zh) | [English](#en)
 
 A Rust reimplementation of the inference side of KWJA: it takes raw Japanese text as input and outputs morphological analysis and dependency parsing results in the KNP format. The whole pipeline compiles into a standalone executable with no Python dependency at runtime; the encoder runs on CUDA via ONNX Runtime, the 13 output heads default to direct cuBLAS calls, and tokenization uses the tokenizers crate.
 
-Output agrees with upstream KWJA (the Python implementation) in the vast majority of cases. Two known deviations: decisions for probabilities exactly on the 0.5 threshold boundary may differ from the reference; when a sentence exceeds the word-stage window capacity (256 minus special tokens), that sentence is not morphologically analyzed and is kept verbatim as an `未定義語` line.
+Output agrees with upstream KWJA (the Python implementation) in the vast majority of cases. There are two differences from the reference output, of different nature:
+
+- **Numerical boundary differences (accumulated error of matrix multiplication)**: each head decides by thresholding its matrix-multiplication output at 0.5; the accumulated error of that multiplication can flip the decision on the rare samples sitting exactly on the boundary, so the Rust side and the Python reference may disagree there. Only such borderline samples are affected; the vast majority of decisions are unaffected.
+- **Overlong-sentence fallback (intentional design)**: the word stage has a limited window (256 positions minus special tokens). When a sentence is too long to fit, the program does not morphologically analyze it and instead keeps it verbatim as an `未定義語` line — a deliberate fallback so that one overlong sentence in a document cannot cost the output of the whole document. This is by design, not a defect.
 
 ## Upstream project
 
@@ -301,6 +313,8 @@ The workspace is split into several crates without `mod.rs`:
 
 ## Architecture and forward pass
 
+One structural difference from upstream: KWJA carries its analysis results in the object tree of rhoknp (bottom-up Morpheme → BasePhrase → Phrase → Clause → Sentence, plus Document), while this repository does without rhoknp and stays flat end to end — the KNP text is streamed out per chapter, and intermediate state lives in flat tables keyed by sid (windows, row tables, owner maps) with no object-tree modeling.
+
 One full analysis runs the forward pass in three layers, executed differently.
 
 | Layer | Computation | Weight format |
@@ -339,6 +353,12 @@ The first one is the default. Both paths do the same matrix multiplications and 
 
 **Encoder on GPU with heads on CPU is not an allowed shape.** It does not error and the output is correct, only slow — easy to miss, so the program exits with an error in that shape; tests enforce it via `assert_device_shape()`.
 
+## Performance
+
+The figures below were measured on the development machine (RTX 4060 8GB, batch=4, cuBLAS heads + ORT CUDA encoder) on a test corpus of 59 chapters / 9,397 segments; expect variation with hardware and drivers:
+
+- **Whole-book inference in 168–211 s** (round-to-round variation of about 20% on the same machine) — the Python reference implementation needs roughly 11–12 minutes for the same task, about a **3–4×** speedup.
+- **Peak memory ~3.3 GB** — chapters are rendered and released in a streaming fashion, so memory stays flat during long runs instead of growing with text length.
 ## Runtime DLLs
 
 Both ONNX Runtime and the CUDA runtime ship inside the repository and are loaded by absolute path at startup.
